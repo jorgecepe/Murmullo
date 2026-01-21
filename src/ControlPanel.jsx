@@ -808,7 +808,7 @@ function ControlPanel() {
                 Transcribe tu voz en español preservando términos técnicos en inglés como git, commit, deploy, API, etc.
               </p>
               <p className="text-xs text-slate-500 mt-3">
-                Versión 1.0.0 • Fork de Open-Whispr
+                Versión 1.1.0 • Fork de Open-Whispr
               </p>
               <a
                 href="https://github.com/jorgecepe/Murmullo"
