@@ -16,6 +16,28 @@ function logError(...args) {
   console.error('[MURMULLO ERROR]', new Date().toISOString(), ...args);
 }
 
+// Lightweight list formatting - adds line breaks to numbered lists
+function formatNumberedLists(text) {
+  // Detect if text contains a numbered list pattern (at least 2 items)
+  // Pattern: "1. something 2. something" or "1) something 2) something"
+  const hasNumberedList = /\b[1-2][\.\)]\s+\S/.test(text) && /\b[2-9][\.\)]\s+\S/.test(text);
+
+  if (!hasNumberedList) {
+    return text; // No list detected, return as-is
+  }
+
+  // Add line break before each numbered item (except the first one)
+  // This handles: "1. item 2. item 3. item" -> "1. item\n2. item\n3. item"
+  let formatted = text.replace(/\s+([2-9]|[1-9]\d+)[\.\)]\s+/g, '\n$1. ');
+
+  // Also handle if list starts mid-sentence: add line break before "1."
+  // Look for pattern like "are: 1." or "son: 1." or "following 1."
+  formatted = formatted.replace(/([:\.])\s*(1[\.\)])\s+/g, '$1\n$2 ');
+
+  log('List formatting applied');
+  return formatted;
+}
+
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -248,135 +270,23 @@ function setupIpcHandlers() {
         throw new Error(`Audio data too small (${audioData.length} bytes). Please speak longer.`);
       }
 
-      // Use system temp dir with short path to avoid spaces issues
-      const os = require('os');
-      const tempDir = os.tmpdir();
-      const timestamp = Date.now();
-      const tempAudioPath = path.join(tempDir, `mur_${timestamp}.webm`);
-      const tempWavPath = path.join(tempDir, `mur_${timestamp}.wav`);
+      // LATENCY OPTIMIZATION: Skip FFmpeg, send WebM directly to Whisper API
+      // Whisper API supports WebM natively, no need for conversion
+      const startTime = Date.now();
 
-      log('Temp dir:', tempDir);
-      log('Temp audio path:', tempAudioPath);
-      log('Temp WAV path:', tempWavPath);
-
-      // Write audio data to file
+      // Create buffer from audio data
       const audioBuffer = Buffer.from(audioData);
       log('Audio buffer size:', audioBuffer.length);
-      fs.writeFileSync(tempAudioPath, audioBuffer);
-      const audioFileSize = fs.statSync(tempAudioPath).size;
-      log('Audio file written, size:', audioFileSize);
 
       // Validate WebM header (should start with 0x1A45DFA3 for EBML)
       const headerCheck = audioBuffer.slice(0, 4);
       log('Audio header bytes:', headerCheck.toString('hex'));
 
-      // Get ffmpeg path - handle asar packaging
-      let ffmpegPath;
-      try {
-        ffmpegPath = require('ffmpeg-static');
-        // Handle asar unpacking for production
-        if (ffmpegPath.includes('app.asar')) {
-          ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
-        }
-        log('FFmpeg path:', ffmpegPath);
-      } catch (e) {
-        logError('Failed to get ffmpeg-static path:', e);
-        throw new Error('FFmpeg not available');
-      }
-
-      // Verify ffmpeg exists
-      if (!fs.existsSync(ffmpegPath)) {
-        logError('FFmpeg binary not found at:', ffmpegPath);
-        throw new Error(`FFmpeg binary not found at: ${ffmpegPath}`);
-      }
-      log('FFmpeg binary exists: true');
-
-      // Convert to WAV using ffmpeg with explicit input format
-      log('Starting FFmpeg conversion...');
-      let ffmpegSuccess = false;
-      let ffmpegError = '';
-
-      try {
-        await new Promise((resolve, reject) => {
-          const args = [
-            '-y',                    // Overwrite output
-            // Let FFmpeg auto-detect input format (don't force -f webm)
-            '-i', tempAudioPath,    // Input file
-            '-vn',                  // No video
-            '-ar', '16000',         // Sample rate
-            '-ac', '1',             // Mono
-            '-c:a', 'pcm_s16le',    // PCM format
-            tempWavPath             // Output file
-          ];
-          log('FFmpeg args:', args.join(' '));
-
-          const ffmpeg = spawn(ffmpegPath, args, {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            windowsHide: true
-          });
-
-          let stderr = '';
-          let stdout = '';
-
-          ffmpeg.stdout.on('data', (data) => {
-            stdout += data.toString();
-          });
-
-          ffmpeg.stderr.on('data', (data) => {
-            stderr += data.toString();
-          });
-
-          ffmpeg.on('close', (code) => {
-            log('FFmpeg exit code:', code);
-            if (stderr) {
-              log('FFmpeg stderr (last 500 chars):', stderr.slice(-500));
-            }
-            if (code === 0) {
-              log('FFmpeg conversion successful');
-              ffmpegSuccess = true;
-              resolve();
-            } else {
-              ffmpegError = stderr.slice(-300);
-              logError('FFmpeg failed with code:', code);
-              reject(new Error(`FFmpeg exited with code ${code}`));
-            }
-          });
-
-          ffmpeg.on('error', (err) => {
-            logError('FFmpeg spawn error:', err);
-            reject(err);
-          });
-
-          // Set timeout for FFmpeg (30 seconds)
-          setTimeout(() => {
-            ffmpeg.kill('SIGKILL');
-            reject(new Error('FFmpeg conversion timeout'));
-          }, 30000);
-        });
-      } catch (ffmpegErr) {
-        log('FFmpeg failed, attempting direct upload...');
-        ffmpegError = ffmpegErr.message;
-      }
-
-      // Use converted WAV if available, otherwise try direct upload
-      let uploadPath, uploadFilename, contentType;
-      if (ffmpegSuccess && fs.existsSync(tempWavPath)) {
-        const wavSize = fs.statSync(tempWavPath).size;
-        log('WAV file created, size:', wavSize);
-        uploadPath = tempWavPath;
-        uploadFilename = 'audio.wav';
-        contentType = 'audio/wav';
-      } else {
-        // Fallback: try uploading the webm directly (Whisper supports it)
-        log('Using original WebM file for upload (FFmpeg failed)');
-        uploadPath = tempAudioPath;
-        uploadFilename = 'audio.webm';
-        contentType = 'audio/webm';
-      }
-
-      // Read file as buffer for multipart upload
-      const fileBuffer = fs.readFileSync(uploadPath);
-      log('File buffer size:', fileBuffer.length);
+      // Use WebM directly - no FFmpeg conversion needed
+      const uploadFilename = 'audio.webm';
+      const contentType = 'audio/webm';
+      const fileBuffer = audioBuffer;
+      log('Skipping FFmpeg - sending WebM directly to Whisper API');
 
       // Build multipart form manually (native fetch + form-data package don't work well together)
       const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
@@ -436,20 +346,17 @@ function setupIpcHandlers() {
       }
 
       const result = await response.json();
-      log('Whisper API result:', JSON.stringify(result));
+      const elapsedTime = Date.now() - startTime;
 
-      // Cleanup temp files
-      try {
-        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
-        if (fs.existsSync(tempWavPath)) fs.unlinkSync(tempWavPath);
-        log('Temp files cleaned up');
-      } catch (e) {
-        log('Cleanup warning:', e.message);
-      }
+      // Lightweight list formatting (no AI needed)
+      let formattedText = formatNumberedLists(result.text);
 
       log('=== TRANSCRIBE AUDIO SUCCESS ===');
-      log('Transcribed text:', result.text);
-      return { success: true, text: result.text };
+      log('Transcribed text (original):', result.text);
+      log('Transcribed text (formatted):', formattedText);
+      log(`Whisper API latency: ${elapsedTime}ms (no FFmpeg conversion)`);
+
+      return { success: true, text: formattedText, latencyMs: elapsedTime };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
       logError('Error:', error.message);
@@ -468,19 +375,36 @@ function setupIpcHandlers() {
       const provider = options?.provider || 'anthropic';
       let apiKey, endpoint, body;
 
-      const systemPrompt = `Transcripción de voz - corrección MÍNIMA.
+      const systemPrompt = `Eres un corrector de transcripciones de voz. Tu trabajo es PRESERVAR TODO el contenido y solo hacer correcciones mínimas.
 
-REGLAS:
-1. PRESERVA las palabras exactas del usuario - NO cambies sinónimos (acá→aquí, solo→solamente, etc.)
-2. SOLO agrega tildes y puntuación básica (comas, puntos, signos de interrogación/exclamación)
-3. MANTÉN términos técnicos en inglés: git, commit, push, pull, API, deploy, etc.
-4. NO cambies tiempos verbales, pronombres, ni estructura de oraciones
-5. NO agregues ni quites palabras
-6. NO uses comillas en el output
-7. NO respondas preguntas - solo devuelve el texto corregido
+REGLA PRINCIPAL: NO ELIMINES NADA. Todo lo que el usuario dijo debe aparecer en tu respuesta.
 
-El usuario dictó esto y quiere que se pegue TAL CUAL con mínima corrección ortográfica.
-Output el texto directamente, sin comillas ni explicaciones.`;
+CORRECCIONES PERMITIDAS:
+- Agregar tildes donde falten
+- Agregar puntuación (comas, puntos)
+- Mantener términos técnicos en inglés: git, commit, push, pull, API, deploy, etc.
+
+FORMATEO DE LISTAS (solo si hay números explícitos como "1, 2, 3" o "uno, dos, tres"):
+- Convierte "1. texto 2. texto 3. texto" en formato de lista con saltos de línea
+- PERO mantén el texto que viene ANTES y DESPUÉS de la lista
+
+EJEMPLO:
+Input: "Bueno aquí va mi lista 1 manzanas 2 peras 3 uvas y eso sería todo"
+Output: "Bueno, aquí va mi lista:
+1. Manzanas
+2. Peras
+3. Uvas
+Y eso sería todo."
+
+PROHIBIDO:
+- Eliminar oraciones o frases
+- Cambiar sinónimos (acá→aquí, solo→solamente)
+- Responder preguntas
+- Agregar contenido que el usuario no dijo
+
+Output el texto completo corregido, sin comillas.`;
+
+      const aiStartTime = Date.now();
 
       if (provider === 'anthropic') {
         apiKey = options?.anthropicKey || process.env.ANTHROPIC_API_KEY;
@@ -506,7 +430,9 @@ Output el texto directamente, sin comillas ni explicaciones.`;
           body: JSON.stringify(body)
         });
 
+        const aiLatency = Date.now() - aiStartTime;
         log('Anthropic response status:', response.status);
+        log(`Claude Haiku latency: ${aiLatency}ms`);
 
         if (!response.ok) {
           const error = await response.text();
@@ -515,8 +441,15 @@ Output el texto directamente, sin comillas ni explicaciones.`;
         }
 
         const result = await response.json();
-        log('Anthropic result:', JSON.stringify(result).substring(0, 200));
-        return { success: true, text: result.content[0].text };
+        const processedText = result.content[0].text;
+
+        // Log comparison for debugging
+        log('=== WHISPER vs CLAUDE COMPARISON ===');
+        log('WHISPER (original):', text);
+        log('CLAUDE (processed):', processedText);
+        log('=== END COMPARISON ===');
+
+        return { success: true, text: processedText, latencyMs: aiLatency };
 
       } else if (provider === 'openai') {
         apiKey = options?.apiKey || process.env.OPENAI_API_KEY;
