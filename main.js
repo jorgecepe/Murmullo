@@ -580,12 +580,18 @@ Output el texto completo corregido, sin comillas.`;
     }
   });
 
-  // Paste text
+  // Paste text (preserves original clipboard content)
   ipcMain.handle('paste-text', async (event, text) => {
     log('Pasting text:', text?.substring(0, 50));
     try {
+      // Save current clipboard content to restore later
+      const originalClipboard = clipboard.readText();
+      const hadOriginalContent = originalClipboard && originalClipboard.length > 0;
+      log('Saved original clipboard content:', hadOriginalContent ? `${originalClipboard.length} chars` : 'empty');
+
+      // Write transcription to clipboard temporarily
       clipboard.writeText(text);
-      log('Text copied to clipboard');
+      log('Text copied to clipboard (temporary)');
 
       // Hide Murmullo window to restore focus to the previous window
       if (mainWindow) {
@@ -622,6 +628,18 @@ Output el texto completo corregido, sin comillas.`;
           osascript.on('close', resolve);
           osascript.on('error', reject);
         });
+      }
+
+      // Wait a bit for paste to complete, then restore original clipboard
+      await new Promise(resolve => setTimeout(resolve, 150));
+
+      if (hadOriginalContent) {
+        clipboard.writeText(originalClipboard);
+        log('Restored original clipboard content');
+      } else {
+        // Clear clipboard if it was empty before
+        clipboard.writeText('');
+        log('Cleared clipboard (was empty before)');
       }
 
       return { success: true };
