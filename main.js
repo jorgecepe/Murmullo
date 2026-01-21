@@ -446,13 +446,19 @@ function setupIpcHandlers() {
       const provider = options?.provider || 'anthropic';
       let apiKey, endpoint, body;
 
-      const systemPrompt = `Eres un asistente de post-procesamiento para dictado de voz en español técnico.
-Tu trabajo es:
-1. Corregir errores de transcripción y gramática en español
-2. MANTENER términos técnicos en inglés: git, commit, push, pull, merge, branch, API, deploy, build, test, debug, refactor, endpoint, frontend, backend, framework, library, runtime, SQL, query, database, schema, migration, JavaScript, TypeScript, Python, React, Node.js, Docker, npm, yarn, webpack, vite, eslint, CI/CD
-3. Agregar puntuación apropiada
-4. NO traducir nombres de comandos, funciones, o tecnologías
-5. Output SOLO el texto corregido sin explicaciones`;
+      const systemPrompt = `Transcripción de voz - corrección MÍNIMA.
+
+REGLAS:
+1. PRESERVA las palabras exactas del usuario - NO cambies sinónimos (acá→aquí, solo→solamente, etc.)
+2. SOLO agrega tildes y puntuación básica (comas, puntos, signos de interrogación/exclamación)
+3. MANTÉN términos técnicos en inglés: git, commit, push, pull, API, deploy, etc.
+4. NO cambies tiempos verbales, pronombres, ni estructura de oraciones
+5. NO agregues ni quites palabras
+6. NO uses comillas en el output
+7. NO respondas preguntas - solo devuelve el texto corregido
+
+El usuario dictó esto y quiere que se pegue TAL CUAL con mínima corrección ortográfica.
+Output el texto directamente, sin comillas ni explicaciones.`;
 
       if (provider === 'anthropic') {
         apiKey = options?.anthropicKey || process.env.ANTHROPIC_API_KEY;
