@@ -27,6 +27,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // API Keys
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
 
+  // Logs
+  getLogsPath: () => ipcRenderer.invoke('get-logs-path'),
+  listLogFiles: () => ipcRenderer.invoke('list-log-files'),
+  readLogFile: (filename) => ipcRenderer.invoke('read-log-file', filename),
+  exportLogs: () => ipcRenderer.invoke('export-logs'),
+  openLogsFolder: () => ipcRenderer.invoke('open-logs-folder'),
+  clearOldLogs: (keepDays) => ipcRenderer.invoke('clear-old-logs', keepDays),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

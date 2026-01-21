@@ -1,12 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw } from 'lucide-react';
 
 const TABS = {
   GENERAL: 'general',
   API_KEYS: 'api-keys',
   HOTKEY: 'hotkey',
   HISTORY: 'history',
-  STATS: 'stats'
+  STATS: 'stats',
+  LOGS: 'logs',
+  HELP: 'help'
+};
+
+// Pricing constants (updated Jan 2026)
+const PRICING = {
+  whisperPerMinute: 0.006,  // USD per minute of audio
+  claudeHaikuInputPer1M: 0.25,
+  claudeHaikuOutputPer1M: 1.25,
+  gpt4oMiniInputPer1M: 0.15,
+  gpt4oMiniOutputPer1M: 0.60,
+  avgTokensPerWord: 1.3,  // Approximate for Spanish
 };
 
 function ControlPanel() {
@@ -23,6 +35,9 @@ function ControlPanel() {
   });
   const [history, setHistory] = useState([]);
   const [saved, setSaved] = useState(false);
+  const [logFiles, setLogFiles] = useState([]);
+  const [selectedLogContent, setSelectedLogContent] = useState(null);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   // Load settings on mount
   useEffect(() => {
@@ -52,6 +67,73 @@ function ControlPanel() {
     }
   };
 
+  // Load log files
+  const loadLogFiles = async () => {
+    if (window.electronAPI) {
+      setLoadingLogs(true);
+      try {
+        const files = await window.electronAPI.listLogFiles();
+        setLogFiles(files);
+      } catch (err) {
+        console.error('Error loading log files:', err);
+      } finally {
+        setLoadingLogs(false);
+      }
+    }
+  };
+
+  // Read a specific log file
+  const readLogFile = async (filename) => {
+    if (window.electronAPI) {
+      setLoadingLogs(true);
+      try {
+        const result = await window.electronAPI.readLogFile(filename);
+        if (result.success) {
+          setSelectedLogContent({ filename, content: result.content });
+        }
+      } catch (err) {
+        console.error('Error reading log file:', err);
+      } finally {
+        setLoadingLogs(false);
+      }
+    }
+  };
+
+  // Export logs to file
+  const exportLogs = async () => {
+    if (window.electronAPI) {
+      const result = await window.electronAPI.exportLogs();
+      if (result.success) {
+        alert(`Logs exportados a: ${result.path}`);
+      }
+    }
+  };
+
+  // Open logs folder in file explorer
+  const openLogsFolder = async () => {
+    if (window.electronAPI) {
+      await window.electronAPI.openLogsFolder();
+    }
+  };
+
+  // Clear old logs
+  const clearOldLogs = async (days = 30) => {
+    if (window.electronAPI) {
+      const result = await window.electronAPI.clearOldLogs(days);
+      if (result.success) {
+        alert(`Se eliminaron ${result.deleted} archivos de log antiguos.`);
+        loadLogFiles();
+      }
+    }
+  };
+
+  // Format file size
+  const formatFileSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
   // Calculate statistics from history
   const calculateStats = () => {
     if (history.length === 0) {
@@ -64,7 +146,9 @@ function ControlPanel() {
         todayWords: 0,
         thisWeekWords: 0,
         smartModeUsage: 0,
-        fastModeUsage: 0
+        fastModeUsage: 0,
+        estimatedCost: { whisper: 0, claude: 0, total: 0 },
+        estimatedAudioMinutes: 0
       };
     }
 
@@ -109,6 +193,17 @@ function ControlPanel() {
     const typingWPM = 40;
     const estimatedTypingTimeSaved = Math.round(totalWords / typingWPM);
 
+    // Estimate audio minutes (assuming ~150 words per minute of speech)
+    const wordsPerMinuteSpeech = 150;
+    const estimatedAudioMinutes = totalWords / wordsPerMinuteSpeech;
+
+    // Calculate estimated costs
+    const whisperCost = estimatedAudioMinutes * PRICING.whisperPerMinute;
+    const totalTokens = totalWords * PRICING.avgTokensPerWord;
+    const claudeCost = smartModeCount > 0
+      ? (totalTokens / 1000000) * (PRICING.claudeHaikuInputPer1M + PRICING.claudeHaikuOutputPer1M) * (smartModeCount / history.length)
+      : 0;
+
     return {
       totalTranscriptions: history.length,
       totalWords,
@@ -118,7 +213,13 @@ function ControlPanel() {
       todayWords,
       thisWeekWords,
       smartModeUsage: Math.round((smartModeCount / history.length) * 100) || 0,
-      fastModeUsage: Math.round((fastModeCount / history.length) * 100) || 0
+      fastModeUsage: Math.round((fastModeCount / history.length) * 100) || 0,
+      estimatedCost: {
+        whisper: whisperCost,
+        claude: claudeCost,
+        total: whisperCost + claudeCost
+      },
+      estimatedAudioMinutes: Math.round(estimatedAudioMinutes * 10) / 10
     };
   };
 
@@ -443,6 +544,31 @@ function ControlPanel() {
               </div>
             </div>
 
+            {/* Cost estimation */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <DollarSign size={16} className="text-green-400" />
+                Costo estimado de uso
+              </h4>
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Whisper (transcripción)</span>
+                  <span className="text-slate-300">${stats.estimatedCost.whisper.toFixed(4)} USD</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Claude Haiku (procesamiento)</span>
+                  <span className="text-slate-300">${stats.estimatedCost.claude.toFixed(4)} USD</span>
+                </div>
+                <div className="border-t border-slate-700 pt-2 mt-2 flex justify-between text-sm font-medium">
+                  <span className="text-slate-300">Total estimado</span>
+                  <span className="text-green-400">${stats.estimatedCost.total.toFixed(4)} USD</span>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  ~{stats.estimatedAudioMinutes} minutos de audio procesados
+                </p>
+              </div>
+            </div>
+
             {/* Refresh button */}
             <button
               onClick={loadHistory}
@@ -450,6 +576,250 @@ function ControlPanel() {
             >
               Actualizar estadísticas
             </button>
+          </div>
+        );
+
+      case TABS.LOGS:
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-medium text-slate-200">Logs de la aplicación</h3>
+              <button
+                onClick={loadLogFiles}
+                disabled={loadingLogs}
+                className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={loadingLogs ? 'animate-spin' : ''} />
+                Actualizar
+              </button>
+            </div>
+
+            <p className="text-sm text-slate-400">
+              Los logs contienen información de uso y errores que ayudan a mejorar la aplicación.
+              No incluyen contenido de tus transcripciones, solo metadatos (tiempos, conteo de palabras).
+            </p>
+
+            {/* Action buttons */}
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={exportLogs}
+                className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <Download size={16} />
+                Exportar todos los logs
+              </button>
+              <button
+                onClick={openLogsFolder}
+                className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                <FolderOpen size={16} />
+                Abrir carpeta de logs
+              </button>
+              <button
+                onClick={() => clearOldLogs(30)}
+                className="flex items-center gap-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 px-4 py-2 rounded-lg transition-colors"
+              >
+                <Trash2 size={16} />
+                Limpiar logs antiguos (+30 días)
+              </button>
+            </div>
+
+            {/* Log files list */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <ScrollText size={16} className="text-blue-400" />
+                Archivos de log
+              </h4>
+
+              {logFiles.length === 0 ? (
+                <div className="text-center py-6 text-slate-400">
+                  <ScrollText size={32} className="mx-auto mb-2 opacity-50" />
+                  <p className="text-sm">No hay archivos de log</p>
+                  <button
+                    onClick={loadLogFiles}
+                    className="mt-2 text-sm text-blue-400 hover:text-blue-300"
+                  >
+                    Cargar archivos
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[200px] overflow-y-auto">
+                  {logFiles.map((file) => (
+                    <div
+                      key={file.name}
+                      className="flex items-center justify-between bg-slate-700/50 rounded-lg p-3 cursor-pointer hover:bg-slate-700 transition-colors"
+                      onClick={() => readLogFile(file.name)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <FileText size={16} className="text-slate-400" />
+                        <div>
+                          <p className="text-sm text-white">{file.name}</p>
+                          <p className="text-xs text-slate-500">
+                            {formatFileSize(file.size)} • {new Date(file.modified).toLocaleDateString('es-ES')}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-xs text-blue-400">Ver</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Selected log content */}
+            {selectedLogContent && (
+              <div className="bg-slate-800/50 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-medium text-slate-300">{selectedLogContent.filename}</h4>
+                  <button
+                    onClick={() => setSelectedLogContent(null)}
+                    className="text-slate-400 hover:text-white"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+                <pre className="bg-slate-900 rounded-lg p-3 text-xs text-slate-300 overflow-auto max-h-[300px] font-mono whitespace-pre-wrap">
+                  {selectedLogContent.content}
+                </pre>
+              </div>
+            )}
+
+            {/* Info about logs location */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-2">Ubicación de los logs</h4>
+              <p className="text-xs text-slate-400 font-mono bg-slate-900 p-2 rounded">
+                %APPDATA%\murmullo\logs\
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                Los logs se guardan automáticamente por día y contienen información útil para diagnóstico.
+              </p>
+            </div>
+          </div>
+        );
+
+      case TABS.HELP:
+        return (
+          <div className="space-y-6">
+            <h3 className="text-lg font-medium text-slate-200">Ayuda y Costos</h3>
+
+            {/* Pricing info */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <DollarSign size={16} className="text-green-400" />
+                Precios de las APIs (Enero 2026)
+              </h4>
+
+              <div className="space-y-4">
+                <div>
+                  <h5 className="text-sm font-medium text-blue-400 mb-2">OpenAI Whisper (Transcripción)</h5>
+                  <div className="bg-slate-700/50 rounded-lg p-3">
+                    <p className="text-sm text-slate-300">$0.006 USD por minuto de audio</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Ejemplo: 10 minutos de audio = $0.06 USD
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <h5 className="text-sm font-medium text-purple-400 mb-2">Anthropic Claude Haiku (Procesamiento)</h5>
+                  <div className="bg-slate-700/50 rounded-lg p-3">
+                    <p className="text-sm text-slate-300">$0.25 USD / 1M tokens entrada</p>
+                    <p className="text-sm text-slate-300">$1.25 USD / 1M tokens salida</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Ejemplo: 1000 palabras ≈ 1300 tokens ≈ $0.002 USD
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <h5 className="text-sm font-medium text-emerald-400 mb-2">OpenAI GPT-4o Mini (Alternativa)</h5>
+                  <div className="bg-slate-700/50 rounded-lg p-3">
+                    <p className="text-sm text-slate-300">$0.15 USD / 1M tokens entrada</p>
+                    <p className="text-sm text-slate-300">$0.60 USD / 1M tokens salida</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Cost example */}
+            <div className="bg-gradient-to-br from-green-500/10 to-emerald-500/5 border border-green-500/30 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-green-400 mb-2">💡 Ejemplo de uso típico</h4>
+              <p className="text-sm text-slate-300">
+                Una sesión de trabajo de 1 hora con ~20 transcripciones (~15 minutos de audio total):
+              </p>
+              <ul className="text-sm text-slate-400 mt-2 space-y-1">
+                <li>• Whisper: 15 min × $0.006 = <span className="text-green-400">$0.09 USD</span></li>
+                <li>• Claude Haiku: ~3000 tokens = <span className="text-green-400">$0.005 USD</span></li>
+                <li>• <strong className="text-white">Total: ~$0.10 USD por hora de uso intensivo</strong></li>
+              </ul>
+            </div>
+
+            {/* Links */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <ExternalLink size={16} className="text-blue-400" />
+                Enlaces útiles
+              </h4>
+              <div className="space-y-2">
+                <a
+                  href="https://openai.com/api/pricing/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  <ExternalLink size={14} />
+                  Precios de OpenAI (Whisper y GPT)
+                </a>
+                <a
+                  href="https://www.anthropic.com/pricing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  <ExternalLink size={14} />
+                  Precios de Anthropic (Claude)
+                </a>
+                <a
+                  href="https://platform.openai.com/usage"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  <ExternalLink size={14} />
+                  Ver uso en OpenAI Dashboard
+                </a>
+                <a
+                  href="https://console.anthropic.com/settings/usage"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  <ExternalLink size={14} />
+                  Ver uso en Anthropic Console
+                </a>
+              </div>
+            </div>
+
+            {/* About */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-2">Acerca de Murmullo</h4>
+              <p className="text-sm text-slate-400">
+                Murmullo es una aplicación de dictado de voz para desarrolladores hispanohablantes.
+                Transcribe tu voz en español preservando términos técnicos en inglés como git, commit, deploy, API, etc.
+              </p>
+              <p className="text-xs text-slate-500 mt-3">
+                Versión 1.0.0 • Fork de Open-Whispr
+              </p>
+              <a
+                href="https://github.com/jorgecepe/Murmullo"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300 mt-2"
+              >
+                <ExternalLink size={12} />
+                Ver en GitHub
+              </a>
+            </div>
           </div>
         );
 
@@ -530,6 +900,28 @@ function ControlPanel() {
               <BarChart3 size={18} />
               Estadísticas
             </button>
+            <button
+              onClick={() => { setActiveTab(TABS.LOGS); loadLogFiles(); }}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.LOGS
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <ScrollText size={18} />
+              Logs
+            </button>
+            <button
+              onClick={() => setActiveTab(TABS.HELP)}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.HELP
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <HelpCircle size={18} />
+              Ayuda
+            </button>
           </nav>
         </div>
 
@@ -538,8 +930,8 @@ function ControlPanel() {
           <div className="max-w-2xl">
             {renderTabContent()}
 
-            {/* Save button (not shown in history or stats tabs) */}
-            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && (
+            {/* Save button (not shown in history, stats, logs, or help tabs) */}
+            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && activeTab !== TABS.LOGS && activeTab !== TABS.HELP && (
               <div className="mt-8 flex items-center gap-4">
                 <button
                   onClick={saveSettings}

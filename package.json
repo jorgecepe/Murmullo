@@ -43,9 +43,37 @@
     "directories": {
       "output": "dist-electron"
     },
+    "files": [
+      "dist/**/*",
+      "main.js",
+      "preload.js",
+      "node_modules/**/*",
+      "!node_modules/**/README*",
+      "!node_modules/**/CHANGELOG*",
+      "!node_modules/**/*.md",
+      "!node_modules/**/test/**"
+    ],
+    "extraResources": [
+      {
+        "from": ".env",
+        "to": ".env",
+        "filter": ["**/*"]
+      }
+    ],
     "win": {
-      "target": "nsis",
-      "icon": "resources/icon.ico"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "resources/icon.png",
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false
     },
     "mac": {
       "target": "dmg",
@@ -58,7 +86,16 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Murmullo",
+      "installerLanguages": ["es-ES", "en-US"],
+      "language": "1034"
+    },
+    "portable": {
+      "artifactName": "Murmullo-Portable-${version}.exe"
     }
   }
 }

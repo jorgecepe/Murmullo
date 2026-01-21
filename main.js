@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
@@ -6,14 +6,74 @@ const fs = require('fs');
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
 
+// ==========================================
+// PERSISTENT LOGGING SYSTEM
+// ==========================================
+let logFilePath = null;
+let logStream = null;
+
+function initLogging() {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+
+    // Create logs directory if it doesn't exist
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+
+    // Create log file with date
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    logFilePath = path.join(logsDir, `murmullo-${today}.log`);
+
+    // Open log file in append mode
+    logStream = fs.createWriteStream(logFilePath, { flags: 'a' });
+
+    // Write session start marker
+    const sessionStart = `\n${'='.repeat(60)}\n[SESSION START] ${new Date().toISOString()}\nApp Version: ${app.getVersion()}\nPlatform: ${process.platform}\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\n${'='.repeat(60)}\n`;
+    logStream.write(sessionStart);
+
+    console.log('[MURMULLO] Log file initialized:', logFilePath);
+  } catch (err) {
+    console.error('[MURMULLO] Failed to initialize logging:', err);
+  }
+}
+
+function writeToLog(level, ...args) {
+  const timestamp = new Date().toISOString();
+  const message = args.map(arg =>
+    typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+  ).join(' ');
+
+  const logLine = `[${timestamp}] [${level}] ${message}\n`;
+
+  // Write to file if stream is available
+  if (logStream) {
+    logStream.write(logLine);
+  }
+
+  return logLine;
+}
+
 function log(...args) {
   if (DEBUG) {
+    const logLine = writeToLog('DEBUG', ...args);
     console.log('[MURMULLO DEBUG]', new Date().toISOString(), ...args);
   }
 }
 
 function logError(...args) {
+  writeToLog('ERROR', ...args);
   console.error('[MURMULLO ERROR]', new Date().toISOString(), ...args);
+}
+
+function logInfo(...args) {
+  writeToLog('INFO', ...args);
+  console.log('[MURMULLO INFO]', new Date().toISOString(), ...args);
+}
+
+// Log user actions for analytics (non-sensitive data only)
+function logAction(action, details = {}) {
+  writeToLog('ACTION', action, details);
 }
 
 // Lightweight list formatting - adds line breaks to numbered lists
@@ -205,6 +265,14 @@ function createTray() {
     { label: 'Show Murmullo', click: () => mainWindow?.show() },
     { label: 'Settings', click: () => controlPanel?.show() },
     { type: 'separator' },
+    { label: 'Export Logs', click: async () => {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+      if (fs.existsSync(logsDir)) {
+        shell.openPath(logsDir);
+        logAction('LOGS_FOLDER_OPENED_FROM_TRAY');
+      }
+    }},
+    { type: 'separator' },
     { label: 'Quit', click: () => {
       app.isQuitting = true;
       app.quit();
@@ -356,6 +424,14 @@ function setupIpcHandlers() {
       log('Transcribed text (formatted):', formattedText);
       log(`Whisper API latency: ${elapsedTime}ms (no FFmpeg conversion)`);
 
+      // Log action for analytics (word count, latency - no personal content)
+      logAction('TRANSCRIPTION_COMPLETE', {
+        wordCount: formattedText.split(/\s+/).length,
+        latencyMs: elapsedTime,
+        audioSizeKB: Math.round(audioData.length / 1024),
+        listFormatted: formattedText !== result.text
+      });
+
       return { success: true, text: formattedText, latencyMs: elapsedTime };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
@@ -448,6 +524,15 @@ Output el texto completo corregido, sin comillas.`;
         log('WHISPER (original):', text);
         log('CLAUDE (processed):', processedText);
         log('=== END COMPARISON ===');
+
+        // Log action for analytics
+        logAction('AI_PROCESSING_COMPLETE', {
+          provider: 'anthropic',
+          model: options?.model || 'claude-3-haiku-20240307',
+          inputWords: text.split(/\s+/).length,
+          outputWords: processedText.split(/\s+/).length,
+          latencyMs: aiLatency
+        });
 
         return { success: true, text: processedText, latencyMs: aiLatency };
 
@@ -624,13 +709,165 @@ Output el texto completo corregido, sin comillas.`;
     };
   });
 
+  // ==========================================
+  // LOG EXPORT HANDLERS
+  // ==========================================
+
+  // Get logs directory path
+  ipcMain.handle('get-logs-path', () => {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    log('Logs directory:', logsDir);
+    return logsDir;
+  });
+
+  // List all log files
+  ipcMain.handle('list-log-files', () => {
+    try {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+      if (!fs.existsSync(logsDir)) return [];
+
+      const files = fs.readdirSync(logsDir)
+        .filter(f => f.endsWith('.log'))
+        .map(f => {
+          const filePath = path.join(logsDir, f);
+          const stats = fs.statSync(filePath);
+          return {
+            name: f,
+            path: filePath,
+            size: stats.size,
+            modified: stats.mtime.toISOString()
+          };
+        })
+        .sort((a, b) => new Date(b.modified) - new Date(a.modified));
+
+      log('Found log files:', files.length);
+      return files;
+    } catch (error) {
+      logError('Error listing log files:', error);
+      return [];
+    }
+  });
+
+  // Read log file content
+  ipcMain.handle('read-log-file', (event, filename) => {
+    try {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+      const filePath = path.join(logsDir, filename);
+
+      // Security check: ensure file is within logs directory
+      if (!filePath.startsWith(logsDir)) {
+        throw new Error('Invalid file path');
+      }
+
+      if (!fs.existsSync(filePath)) {
+        throw new Error('File not found');
+      }
+
+      const content = fs.readFileSync(filePath, 'utf-8');
+      log('Read log file:', filename, 'size:', content.length);
+      return { success: true, content };
+    } catch (error) {
+      logError('Error reading log file:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Export logs to a user-selected location
+  ipcMain.handle('export-logs', async () => {
+    try {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+      if (!fs.existsSync(logsDir)) {
+        return { success: false, error: 'No logs directory found' };
+      }
+
+      // Open save dialog
+      const result = await dialog.showSaveDialog({
+        title: 'Export Murmullo Logs',
+        defaultPath: `murmullo-logs-${new Date().toISOString().split('T')[0]}.txt`,
+        filters: [
+          { name: 'Text Files', extensions: ['txt'] },
+          { name: 'All Files', extensions: ['*'] }
+        ]
+      });
+
+      if (result.canceled) {
+        return { success: false, error: 'Export cancelled' };
+      }
+
+      // Concatenate all log files
+      const logFiles = fs.readdirSync(logsDir)
+        .filter(f => f.endsWith('.log'))
+        .sort();
+
+      let combinedLogs = `Murmullo Logs Export\nExported: ${new Date().toISOString()}\nApp Version: ${app.getVersion()}\n${'='.repeat(60)}\n\n`;
+
+      for (const file of logFiles) {
+        const filePath = path.join(logsDir, file);
+        const content = fs.readFileSync(filePath, 'utf-8');
+        combinedLogs += `\n--- ${file} ---\n${content}\n`;
+      }
+
+      fs.writeFileSync(result.filePath, combinedLogs, 'utf-8');
+      logAction('LOGS_EXPORTED', { path: result.filePath, fileCount: logFiles.length });
+
+      return { success: true, path: result.filePath };
+    } catch (error) {
+      logError('Error exporting logs:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Open logs folder in file explorer
+  ipcMain.handle('open-logs-folder', () => {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+    shell.openPath(logsDir);
+    logAction('LOGS_FOLDER_OPENED');
+    return { success: true, path: logsDir };
+  });
+
+  // Clear old logs (keep last N days)
+  ipcMain.handle('clear-old-logs', (event, keepDays = 30) => {
+    try {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+      if (!fs.existsSync(logsDir)) return { success: true, deleted: 0 };
+
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - keepDays);
+
+      const files = fs.readdirSync(logsDir).filter(f => f.endsWith('.log'));
+      let deletedCount = 0;
+
+      for (const file of files) {
+        const filePath = path.join(logsDir, file);
+        const stats = fs.statSync(filePath);
+
+        if (stats.mtime < cutoffDate) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+          log('Deleted old log:', file);
+        }
+      }
+
+      logAction('OLD_LOGS_CLEARED', { keepDays, deleted: deletedCount });
+      return { success: true, deleted: deletedCount };
+    } catch (error) {
+      logError('Error clearing old logs:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   log('IPC handlers set up');
 }
 
 // App lifecycle
 app.whenReady().then(async () => {
   try {
-    log('App ready, starting initialization...');
+    // Initialize logging first
+    initLogging();
+    logInfo('App ready, starting initialization...');
 
     // Load .env file if exists
     const envPath = path.join(__dirname, '.env');
