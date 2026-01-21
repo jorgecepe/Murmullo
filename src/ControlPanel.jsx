@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2 } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap } from 'lucide-react';
 
 const TABS = {
   GENERAL: 'general',
   API_KEYS: 'api-keys',
   HOTKEY: 'hotkey',
-  HISTORY: 'history'
+  HISTORY: 'history',
+  STATS: 'stats'
 };
 
 function ControlPanel() {
@@ -46,10 +47,82 @@ function ControlPanel() {
 
   const loadHistory = async () => {
     if (window.electronAPI) {
-      const transcriptions = await window.electronAPI.getTranscriptions(50);
+      const transcriptions = await window.electronAPI.getTranscriptions(500); // Get more for stats
       setHistory(transcriptions);
     }
   };
+
+  // Calculate statistics from history
+  const calculateStats = () => {
+    if (history.length === 0) {
+      return {
+        totalTranscriptions: 0,
+        totalWords: 0,
+        avgWordsPerTranscription: 0,
+        estimatedTypingTimeSaved: 0,
+        todayTranscriptions: 0,
+        todayWords: 0,
+        thisWeekWords: 0,
+        smartModeUsage: 0,
+        fastModeUsage: 0
+      };
+    }
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - 7);
+
+    let totalWords = 0;
+    let todayWords = 0;
+    let todayTranscriptions = 0;
+    let thisWeekWords = 0;
+    let smartModeCount = 0;
+    let fastModeCount = 0;
+
+    history.forEach(item => {
+      const text = item.processed_text || item.original_text || '';
+      const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+      totalWords += wordCount;
+
+      const itemDate = new Date(item.timestamp);
+
+      if (itemDate >= todayStart) {
+        todayWords += wordCount;
+        todayTranscriptions++;
+      }
+
+      if (itemDate >= weekStart) {
+        thisWeekWords += wordCount;
+      }
+
+      if (item.is_processed) {
+        smartModeCount++;
+      } else {
+        fastModeCount++;
+      }
+    });
+
+    const avgWordsPerTranscription = history.length > 0 ? Math.round(totalWords / history.length) : 0;
+
+    // Assuming average typing speed of 40 WPM
+    const typingWPM = 40;
+    const estimatedTypingTimeSaved = Math.round(totalWords / typingWPM);
+
+    return {
+      totalTranscriptions: history.length,
+      totalWords,
+      avgWordsPerTranscription,
+      estimatedTypingTimeSaved,
+      todayTranscriptions,
+      todayWords,
+      thisWeekWords,
+      smartModeUsage: Math.round((smartModeCount / history.length) * 100) || 0,
+      fastModeUsage: Math.round((fastModeCount / history.length) * 100) || 0
+    };
+  };
+
+  const stats = calculateStats();
 
   const handleSettingChange = (key, value) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -279,6 +352,107 @@ function ControlPanel() {
           </div>
         );
 
+      case TABS.STATS:
+        return (
+          <div className="space-y-6">
+            <h3 className="text-lg font-medium text-slate-200">Estadísticas de uso</h3>
+
+            {/* Main stats grid */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gradient-to-br from-blue-500/20 to-blue-600/10 border border-blue-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <FileText className="text-blue-400" size={24} />
+                  <span className="text-slate-400 text-sm">Total transcripciones</span>
+                </div>
+                <p className="text-3xl font-bold text-white">{stats.totalTranscriptions}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-green-500/20 to-green-600/10 border border-green-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <BarChart3 className="text-green-400" size={24} />
+                  <span className="text-slate-400 text-sm">Total palabras</span>
+                </div>
+                <p className="text-3xl font-bold text-white">{stats.totalWords.toLocaleString()}</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-purple-500/20 to-purple-600/10 border border-purple-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <Clock className="text-purple-400" size={24} />
+                  <span className="text-slate-400 text-sm">Tiempo de tipeo ahorrado</span>
+                </div>
+                <p className="text-3xl font-bold text-white">{stats.estimatedTypingTimeSaved} min</p>
+                <p className="text-xs text-slate-500 mt-1">Basado en 40 palabras/minuto</p>
+              </div>
+
+              <div className="bg-gradient-to-br from-amber-500/20 to-amber-600/10 border border-amber-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <Zap className="text-amber-400" size={24} />
+                  <span className="text-slate-400 text-sm">Promedio por transcripción</span>
+                </div>
+                <p className="text-3xl font-bold text-white">{stats.avgWordsPerTranscription}</p>
+                <p className="text-xs text-slate-500 mt-1">palabras</p>
+              </div>
+            </div>
+
+            {/* Today and this week */}
+            <div className="bg-slate-800/50 rounded-xl p-4 space-y-4">
+              <h4 className="text-sm font-medium text-slate-300">Actividad reciente</h4>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-slate-400 text-sm">Hoy</p>
+                  <p className="text-xl font-semibold text-white">{stats.todayTranscriptions} transcripciones</p>
+                  <p className="text-sm text-slate-500">{stats.todayWords} palabras</p>
+                </div>
+                <div>
+                  <p className="text-slate-400 text-sm">Esta semana</p>
+                  <p className="text-xl font-semibold text-white">{stats.thisWeekWords.toLocaleString()}</p>
+                  <p className="text-sm text-slate-500">palabras</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Mode usage */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3">Uso de modos</h4>
+              <div className="space-y-3">
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-slate-400">Modo Inteligente</span>
+                    <span className="text-slate-300">{stats.smartModeUsage}%</span>
+                  </div>
+                  <div className="w-full bg-slate-700 rounded-full h-2">
+                    <div
+                      className="bg-blue-500 h-2 rounded-full transition-all"
+                      style={{ width: `${stats.smartModeUsage}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-slate-400">Modo Rápido</span>
+                    <span className="text-slate-300">{stats.fastModeUsage}%</span>
+                  </div>
+                  <div className="w-full bg-slate-700 rounded-full h-2">
+                    <div
+                      className="bg-green-500 h-2 rounded-full transition-all"
+                      style={{ width: `${stats.fastModeUsage}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Refresh button */}
+            <button
+              onClick={loadHistory}
+              className="text-sm text-blue-400 hover:text-blue-300"
+            >
+              Actualizar estadísticas
+            </button>
+          </div>
+        );
+
       default:
         return null;
     }
@@ -345,6 +519,17 @@ function ControlPanel() {
               <History size={18} />
               Historial
             </button>
+            <button
+              onClick={() => setActiveTab(TABS.STATS)}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.STATS
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <BarChart3 size={18} />
+              Estadísticas
+            </button>
           </nav>
         </div>
 
@@ -353,8 +538,8 @@ function ControlPanel() {
           <div className="max-w-2xl">
             {renderTabContent()}
 
-            {/* Save button (not shown in history tab) */}
-            {activeTab !== TABS.HISTORY && (
+            {/* Save button (not shown in history or stats tabs) */}
+            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && (
               <div className="mt-8 flex items-center gap-4">
                 <button
                   onClick={saveSettings}

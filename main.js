@@ -145,17 +145,39 @@ function createControlPanel() {
 
 function createTray() {
   log('Creating tray...');
-  const iconPath = path.join(__dirname, 'resources', 'tray-icon.png');
-  let trayIcon;
 
-  if (fs.existsSync(iconPath)) {
-    trayIcon = nativeImage.createFromPath(iconPath);
-  } else {
-    // Create a simple 16x16 icon programmatically
-    trayIcon = nativeImage.createEmpty();
+  // Create a simple 16x16 blue circle icon for the tray
+  // Using a minimal valid PNG that Windows can display
+  const size = { width: 16, height: 16 };
+  const trayIcon = nativeImage.createEmpty();
+
+  // Try to resize to ensure it's valid, if empty create from buffer
+  const canvas = Buffer.alloc(16 * 16 * 4); // RGBA buffer
+  for (let i = 0; i < 16 * 16; i++) {
+    const x = i % 16;
+    const y = Math.floor(i / 16);
+    const dx = x - 8;
+    const dy = y - 8;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 6) {
+      // Blue circle
+      canvas[i * 4] = 59;      // R
+      canvas[i * 4 + 1] = 130; // G
+      canvas[i * 4 + 2] = 246; // B
+      canvas[i * 4 + 3] = 255; // A
+    } else {
+      // Transparent
+      canvas[i * 4] = 0;
+      canvas[i * 4 + 1] = 0;
+      canvas[i * 4 + 2] = 0;
+      canvas[i * 4 + 3] = 0;
+    }
   }
 
-  tray = new Tray(trayIcon);
+  const icon = nativeImage.createFromBuffer(canvas, size);
+  tray = new Tray(icon);
+  tray.setToolTip('Murmullo - Dictado de voz');
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Show Murmullo', click: () => mainWindow?.show() },
