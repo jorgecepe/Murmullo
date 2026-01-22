@@ -191,6 +191,15 @@ function createMainWindow() {
     mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
   }
 
+  // Minimize to tray instead of closing
+  mainWindow.on('close', (e) => {
+    if (!app.isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+      log('Main window hidden to tray');
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -262,10 +271,20 @@ function createTray() {
   tray.setToolTip('Murmullo - Dictado de voz');
 
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Show Murmullo', click: () => mainWindow?.show() },
-    { label: 'Settings', click: () => controlPanel?.show() },
+    { label: 'Mostrar Murmullo', click: () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    }},
+    { label: 'Configuración', click: () => {
+      if (controlPanel) {
+        controlPanel.show();
+        controlPanel.focus();
+      }
+    }},
     { type: 'separator' },
-    { label: 'Export Logs', click: async () => {
+    { label: 'Exportar Logs', click: async () => {
       const logsDir = path.join(app.getPath('userData'), 'logs');
       if (fs.existsSync(logsDir)) {
         shell.openPath(logsDir);
@@ -273,17 +292,32 @@ function createTray() {
       }
     }},
     { type: 'separator' },
-    { label: 'Quit', click: () => {
+    { label: 'Salir', click: () => {
       app.isQuitting = true;
       app.quit();
     }}
   ]);
 
-  tray.setToolTip('Murmullo - Voice Dictation');
+  tray.setToolTip('Murmullo - Dictado por voz (Ctrl+Shift+Space)');
   tray.setContextMenu(contextMenu);
 
+  // Double-click or single click shows the main window
   tray.on('click', () => {
-    mainWindow?.show();
+    if (mainWindow) {
+      if (mainWindow.isVisible()) {
+        mainWindow.focus();
+      } else {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    }
+  });
+
+  tray.on('double-click', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 
   log('Tray created');
@@ -1046,20 +1080,36 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  // Don't quit on window close - we minimize to tray instead
+  // The app will only quit when user selects "Salir" from tray menu
+  // or when app.isQuitting is true
+  if (app.isQuitting) {
     app.quit();
   }
+  // Otherwise, keep the app running in the tray
 });
 
 app.on('will-quit', () => {
   log('App quitting...');
   globalShortcut.unregisterAll();
   saveDatabase();
+
+  // Destroy tray icon
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
 });
 
 app.on('second-instance', () => {
+  // When user tries to open a second instance, show and focus the existing window
   if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
     mainWindow.focus();
   }
 });
