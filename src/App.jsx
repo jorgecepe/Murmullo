@@ -26,6 +26,49 @@ function App() {
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
 
+  // Cleanup function to properly release audio resources
+  const cleanupAudioResources = useCallback(() => {
+    console.log('[App] Cleaning up audio resources...');
+
+    // Stop MediaRecorder if active
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+        console.log('[App] MediaRecorder stopped during cleanup');
+      } catch (e) {
+        console.log('[App] MediaRecorder already stopped');
+      }
+    }
+    mediaRecorderRef.current = null;
+
+    // Stop all audio tracks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log('[App] Audio track stopped:', track.label);
+      });
+      streamRef.current = null;
+    }
+
+    // Clear audio chunks
+    audioChunksRef.current = [];
+  }, []);
+
+  // Cleanup on unmount and before unload
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      console.log('[App] Window unloading, cleaning up...');
+      cleanupAudioResources();
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      cleanupAudioResources();
+    };
+  }, [cleanupAudioResources]);
+
   // Load settings from localStorage
   useEffect(() => {
     const savedSettings = {
@@ -61,6 +104,11 @@ function App() {
 
   const startRecording = useCallback(async () => {
     console.log('[App] Starting recording...');
+
+    // Always cleanup previous resources before starting a new recording
+    // This prevents the MediaRecorder from being in a corrupted state
+    cleanupAudioResources();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -70,7 +118,7 @@ function App() {
           noiseSuppression: true
         }
       });
-      console.log('[App] Got audio stream');
+      console.log('[App] Got audio stream, tracks:', stream.getAudioTracks().length);
       streamRef.current = stream;
 
       // Try different mimeTypes for compatibility - prefer formats Whisper supports
@@ -133,7 +181,7 @@ function App() {
       setStatus(STATUS.ERROR);
       setErrorMessage('No se pudo acceder al micrófono: ' + error.message);
     }
-  }, [settings]);
+  }, [settings, cleanupAudioResources]);
 
   const stopRecording = useCallback(() => {
     console.log('[App] Stopping recording...');
