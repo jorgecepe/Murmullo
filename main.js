@@ -348,13 +348,121 @@ function setupIpcHandlers() {
 
       // Validate WebM header (should start with 0x1A45DFA3 for EBML)
       const headerCheck = audioBuffer.slice(0, 4);
-      log('Audio header bytes:', headerCheck.toString('hex'));
+      const headerHex = headerCheck.toString('hex');
+      log('Audio header bytes:', headerHex);
 
-      // Use WebM directly - no FFmpeg conversion needed
-      const uploadFilename = 'audio.webm';
-      const contentType = 'audio/webm';
-      const fileBuffer = audioBuffer;
-      log('Skipping FFmpeg - sending WebM directly to Whisper API');
+      // Check if this is a valid EBML/WebM header
+      const isValidEBML = headerHex === '1a45dfa3';
+
+      let uploadFilename;
+      let contentType;
+      let fileBuffer;
+
+      if (isValidEBML) {
+        // Valid WebM - send directly
+        uploadFilename = 'audio.webm';
+        contentType = 'audio/webm';
+        fileBuffer = audioBuffer;
+        log('Valid WebM header detected, sending directly to Whisper API');
+      } else {
+        // Invalid header - the MediaRecorder produced a corrupted file
+        // This can happen when the app was closed abruptly during recording
+        // or when the audio stream was in an inconsistent state
+        logError('Invalid WebM header detected:', headerHex);
+        logError('Expected: 1a45dfa3 (EBML signature)');
+        logError('This usually means the MediaRecorder was in a corrupted state.');
+        logError('Attempting to use FFmpeg to convert/repair the audio...');
+
+        // Try to use FFmpeg to convert the raw audio data to a valid format
+        const tempDir = app.getPath('temp');
+        const inputPath = path.join(tempDir, `murmullo_input_${Date.now()}.webm`);
+        const outputPath = path.join(tempDir, `murmullo_output_${Date.now()}.wav`);
+
+        try {
+          // Write the potentially corrupted data to a temp file
+          fs.writeFileSync(inputPath, audioBuffer);
+          log('Wrote temp input file:', inputPath);
+
+          // Try to find ffmpeg
+          let ffmpegPath = 'ffmpeg';
+          try {
+            let ffmpegStatic = require('ffmpeg-static');
+            if (ffmpegStatic) {
+              // In production (asar), ffmpeg-static path needs adjustment
+              if (app.isPackaged && ffmpegStatic.includes('app.asar')) {
+                ffmpegPath = ffmpegStatic.replace('app.asar', 'app.asar.unpacked');
+              } else {
+                ffmpegPath = ffmpegStatic;
+              }
+              log('Using ffmpeg-static:', ffmpegPath);
+
+              // Verify the file exists
+              if (!fs.existsSync(ffmpegPath)) {
+                log('ffmpeg-static binary not found at:', ffmpegPath, '- falling back to system ffmpeg');
+                ffmpegPath = 'ffmpeg';
+              }
+            }
+          } catch (e) {
+            log('ffmpeg-static not available, trying system ffmpeg:', e.message);
+          }
+
+          // Run FFmpeg to convert to WAV
+          await new Promise((resolve, reject) => {
+            const ffmpeg = spawn(ffmpegPath, [
+              '-y',
+              '-i', inputPath,
+              '-ar', '16000',
+              '-ac', '1',
+              '-f', 'wav',
+              outputPath
+            ]);
+
+            let stderr = '';
+            ffmpeg.stderr.on('data', (data) => {
+              stderr += data.toString();
+            });
+
+            ffmpeg.on('close', (code) => {
+              if (code === 0) {
+                resolve();
+              } else {
+                reject(new Error(`FFmpeg failed with code ${code}: ${stderr}`));
+              }
+            });
+
+            ffmpeg.on('error', (err) => {
+              reject(new Error(`FFmpeg error: ${err.message}. The audio recording may be corrupted. Try restarting the app.`));
+            });
+          });
+
+          // Read the converted WAV file
+          fileBuffer = fs.readFileSync(outputPath);
+          uploadFilename = 'audio.wav';
+          contentType = 'audio/wav';
+          log('FFmpeg conversion successful, WAV size:', fileBuffer.length);
+
+          // Cleanup temp files
+          try {
+            fs.unlinkSync(inputPath);
+            fs.unlinkSync(outputPath);
+          } catch (e) {
+            // Ignore cleanup errors
+          }
+        } catch (ffmpegError) {
+          // FFmpeg failed - try to cleanup and throw a helpful error
+          try {
+            if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
+            if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+          } catch (e) {}
+
+          logError('FFmpeg conversion failed:', ffmpegError.message);
+          throw new Error(
+            'El archivo de audio está corrupto (header inválido: ' + headerHex + '). ' +
+            'Esto puede ocurrir si la app se cerró durante una grabación. ' +
+            'Por favor reinicia la aplicación completamente y vuelve a intentar.'
+          );
+        }
+      }
 
       // Build multipart form manually (native fetch + form-data package don't work well together)
       const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
