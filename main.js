@@ -1102,6 +1102,23 @@ Output el texto completo corregido, sin comillas.`;
     }
   });
 
+  // App info
+  ipcMain.handle('get-app-version', () => {
+    return app.getVersion();
+  });
+
+  ipcMain.handle('get-app-info', () => {
+    return {
+      version: app.getVersion(),
+      name: app.getName(),
+      electron: process.versions.electron,
+      node: process.versions.node,
+      chrome: process.versions.chrome,
+      platform: process.platform,
+      arch: process.arch
+    };
+  });
+
   log('IPC handlers set up');
 }
 

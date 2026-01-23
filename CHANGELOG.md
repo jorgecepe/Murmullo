@@ -7,6 +7,30 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.2.0] - 2026-01-23
+
+### Agregado
+- **UI flotante minimal**: Ventana reducida a 60x60px como indicador circular en esquina inferior derecha
+- **Conversión WAV en renderer**: Evita bug de Chromium MediaRecorder que corrompía headers WebM
+- **Formateo de listas en español**: Detecta palabras numéricas (uno, dos, tres...) y las convierte a formato de lista numerada
+- **Sección "Acerca de" mejorada**: Versión dinámica, links a GitHub, Changelog y reporte de issues
+- **Audios de prueba**: 4 archivos WAV de ejemplo en `test_audio/` para testing
+- **Flag SAVE_DEBUG_AUDIO**: Permite capturar audios para debugging (desactivado por defecto)
+
+### Cambiado
+- **Operación solo por hotkey**: Eliminada funcionalidad de click, solo responde a Ctrl+Shift+Space
+- **Limpieza de recursos de audio**: Mejor manejo del ciclo de vida de MediaRecorder y streams
+
+### Corregido
+- **Bug de regex en listas**: El uso de `test()` en regex global consumía el estado e impedía el `replace()` posterior
+- **Headers WebM corruptos**: Conversión a WAV evita el problema de headers inválidos en grabaciones consecutivas
+
+### Build
+- `Murmullo Setup 1.2.0.exe` - Instalador NSIS
+- `Murmullo-Portable-1.2.0.exe` - Versión portable
+
+---
+
 ## [1.1.0] - 2025-01-21
 
 ### Agregado
@@ -60,10 +84,10 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ## Próximas versiones (planificado)
 
-### [1.2.0] - Por definir
+### [1.3.0] - Por definir
 - [ ] Integración con Groq para transcripción más rápida
 - [ ] Doble-tap de Ctrl como hotkey alternativo
-- [ ] UI flotante durante grabación
+- [ ] Selección de micrófono en configuración
 
 ---
 
