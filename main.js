@@ -5,6 +5,8 @@ const fs = require('fs');
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
+// SAVE_DEBUG_AUDIO - set to true to save audio files for testing (saves to %APPDATA%/murmullo/debug_audio/)
+const SAVE_DEBUG_AUDIO = false;
 
 // ==========================================
 // PERSISTENT LOGGING SYSTEM
@@ -77,21 +79,57 @@ function logAction(action, details = {}) {
 }
 
 // Lightweight list formatting - adds line breaks to numbered lists
+// Supports both numeric (1, 2, 3) and Spanish word numbers (uno, dos, tres)
 function formatNumberedLists(text) {
-  // Detect if text contains a numbered list pattern (at least 2 items)
-  // Pattern: "1. something 2. something" or "1) something 2) something"
-  const hasNumberedList = /\b[1-2][\.\)]\s+\S/.test(text) && /\b[2-9][\.\)]\s+\S/.test(text);
+  // Spanish number words to digits mapping
+  const spanishNumbers = {
+    'uno': '1', 'una': '1', 'primero': '1', 'primera': '1',
+    'dos': '2', 'segundo': '2', 'segunda': '2',
+    'tres': '3', 'tercero': '3', 'tercera': '3',
+    'cuatro': '4', 'cuarto': '4', 'cuarta': '4',
+    'cinco': '5', 'quinto': '5', 'quinta': '5',
+    'seis': '6', 'sexto': '6', 'sexta': '6',
+    'siete': '7', 'séptimo': '7', 'séptima': '7',
+    'ocho': '8', 'octavo': '8', 'octava': '8',
+    'nueve': '9', 'noveno': '9', 'novena': '9',
+    'diez': '10', 'décimo': '10', 'décima': '10'
+  };
 
-  if (!hasNumberedList) {
-    return text; // No list detected, return as-is
+  let formatted = text;
+
+  // First, convert Spanish number words to digits when they appear as list markers
+  // Pattern: "uno, algo" or "uno: algo" or "uno. algo" at word boundaries
+  const spanishPatternStr = `\\b(${Object.keys(spanishNumbers).join('|')})[,:\\.]\\s+`;
+
+  // Check if text contains Spanish number words that look like a list (need at least 2)
+  const hasSpanishList = (text.match(new RegExp(spanishPatternStr, 'gi')) || []).length >= 2;
+
+  if (hasSpanishList) {
+    // Convert Spanish numbers to digits with proper list format
+    formatted = formatted.replace(
+      new RegExp(spanishPatternStr, 'gi'),
+      (match, word) => {
+        const digit = spanishNumbers[word.toLowerCase()];
+        return digit + '. ';
+      }
+    );
+    log('Spanish number words converted to digits');
+  }
+
+  // Now check for numeric list pattern (at least 2 items)
+  // Pattern: "1. something 2. something" or "1) something 2) something"
+  const hasNumberedList = /\b[1-2][\.\)]\s+\S/.test(formatted) && /\b[2-9][\.\)]\s+\S/.test(formatted);
+
+  if (!hasNumberedList && !hasSpanishList) {
+    return text; // No list detected, return original
   }
 
   // Add line break before each numbered item (except the first one)
   // This handles: "1. item 2. item 3. item" -> "1. item\n2. item\n3. item"
-  let formatted = text.replace(/\s+([2-9]|[1-9]\d+)[\.\)]\s+/g, '\n$1. ');
+  formatted = formatted.replace(/\s+([2-9]|[1-9]\d+)[\.\)]\s+/g, '\n$1. ');
 
   // Also handle if list starts mid-sentence: add line break before "1."
-  // Look for pattern like "are: 1." or "son: 1." or "following 1."
+  // Look for pattern like "siguiente: 1." or "son: 1." or "hacer: 1."
   formatted = formatted.replace(/([:\.])\s*(1[\.\)])\s+/g, '$1\n$2 ');
 
   log('List formatting applied');
@@ -169,19 +207,37 @@ function saveDatabase() {
 
 function createMainWindow() {
   log('Creating main window...');
+
+  // Get screen dimensions to position window at bottom-right
+  const { screen } = require('electron');
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+
+  // Small indicator window (60x60 pixels)
+  const windowSize = 60;
+  const margin = 20; // Distance from screen edges
+
   mainWindow = new BrowserWindow({
-    width: 350,
-    height: 250,
-    frame: true,
+    width: windowSize,
+    height: windowSize,
+    x: screenWidth - windowSize - margin,
+    y: screenHeight - windowSize - margin,
+    frame: false,
+    transparent: true,
     alwaysOnTop: true,
-    skipTaskbar: false,
+    skipTaskbar: true,
     resizable: false,
+    focusable: false, // Don't steal focus from other windows
+    hasShadow: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
     }
   });
+
+  // Make window click-through when idle (optional - can be enabled later)
+  // mainWindow.setIgnoreMouseEvents(true, { forward: true });
 
   if (isDev) {
     mainWindow.loadURL(VITE_DEV_SERVER_URL);
@@ -380,19 +436,28 @@ function setupIpcHandlers() {
       const audioBuffer = Buffer.from(audioData);
       log('Audio buffer size:', audioBuffer.length);
 
-      // Validate WebM header (should start with 0x1A45DFA3 for EBML)
+
+      // Check audio format by header
       const headerCheck = audioBuffer.slice(0, 4);
       const headerHex = headerCheck.toString('hex');
-      log('Audio header bytes:', headerHex);
+      const headerString = headerCheck.toString('ascii');
+      log('Audio header bytes:', headerHex, '(' + headerString + ')');
 
-      // Check if this is a valid EBML/WebM header
-      const isValidEBML = headerHex === '1a45dfa3';
+      // Detect format
+      const isValidEBML = headerHex === '1a45dfa3';  // WebM/MKV
+      const isWAV = headerString === 'RIFF';         // WAV
 
       let uploadFilename;
       let contentType;
       let fileBuffer;
 
-      if (isValidEBML) {
+      if (isWAV) {
+        // WAV format - converted by renderer to avoid Chromium bug
+        uploadFilename = 'audio.wav';
+        contentType = 'audio/wav';
+        fileBuffer = audioBuffer;
+        log('WAV format detected (converted from WebM), sending to Whisper API');
+      } else if (isValidEBML) {
         // Valid WebM - send directly
         uploadFilename = 'audio.webm';
         contentType = 'audio/webm';
@@ -495,6 +560,24 @@ function setupIpcHandlers() {
             'Esto puede ocurrir si la app se cerró durante una grabación. ' +
             'Por favor reinicia la aplicación completamente y vuelve a intentar.'
           );
+        }
+      }
+
+      // Save audio files for testing purposes (with correct extension)
+      // Enable SAVE_DEBUG_AUDIO at top of file to capture audio samples
+      if (SAVE_DEBUG_AUDIO) {
+        try {
+          const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
+          if (!fs.existsSync(debugAudioDir)) {
+            fs.mkdirSync(debugAudioDir, { recursive: true });
+          }
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const ext = uploadFilename.split('.').pop(); // wav, webm, etc.
+          const debugAudioPath = path.join(debugAudioDir, `audio_${timestamp}.${ext}`);
+          fs.writeFileSync(debugAudioPath, fileBuffer);
+          log('DEBUG: Audio saved to:', debugAudioPath);
+        } catch (debugErr) {
+          log('DEBUG: Failed to save audio file:', debugErr.message);
         }
       }
 
