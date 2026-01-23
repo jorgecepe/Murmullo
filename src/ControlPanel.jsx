@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info } from 'lucide-react';
 
 const TABS = {
   GENERAL: 'general',
@@ -38,6 +38,7 @@ function ControlPanel() {
   const [logFiles, setLogFiles] = useState([]);
   const [selectedLogContent, setSelectedLogContent] = useState(null);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [appInfo, setAppInfo] = useState({ version: '...' });
 
   // Load settings on mount
   useEffect(() => {
@@ -58,6 +59,13 @@ function ControlPanel() {
 
     // Load history
     loadHistory();
+
+    // Load app info (version, etc.)
+    if (window.electronAPI?.getAppInfo) {
+      window.electronAPI.getAppInfo().then(info => {
+        setAppInfo(info);
+      });
+    }
   }, []);
 
   const loadHistory = async () => {
@@ -802,23 +810,57 @@ function ControlPanel() {
 
             {/* About */}
             <div className="bg-slate-800/50 rounded-xl p-4">
-              <h4 className="text-sm font-medium text-slate-300 mb-2">Acerca de Murmullo</h4>
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <Info size={16} className="text-blue-400" />
+                Acerca de Murmullo
+              </h4>
               <p className="text-sm text-slate-400">
                 Murmullo es una aplicación de dictado de voz para desarrolladores hispanohablantes.
                 Transcribe tu voz en español preservando términos técnicos en inglés como git, commit, deploy, API, etc.
               </p>
-              <p className="text-xs text-slate-500 mt-3">
-                Versión 1.1.0 • Fork de Open-Whispr
+
+              <div className="mt-4 p-3 bg-slate-700/50 rounded-lg">
+                <p className="text-sm text-slate-300">
+                  <span className="font-medium">Versión:</span> {appInfo.version}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Electron {appInfo.electron} • Node {appInfo.node}
+                </p>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <a
+                  href="https://github.com/jorgecepe/Murmullo"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+                >
+                  <Github size={16} />
+                  Repositorio en GitHub
+                </a>
+                <a
+                  href="https://github.com/jorgecepe/Murmullo/blob/main/CHANGELOG.md"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+                >
+                  <ScrollText size={16} />
+                  Ver historial de cambios (Changelog)
+                </a>
+                <a
+                  href="https://github.com/jorgecepe/Murmullo/issues"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300"
+                >
+                  <ExternalLink size={16} />
+                  Reportar un problema
+                </a>
+              </div>
+
+              <p className="text-xs text-slate-500 mt-4">
+                Fork de Open-Whispr • Hecho con ❤️ para desarrolladores
               </p>
-              <a
-                href="https://github.com/jorgecepe/Murmullo"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 text-xs text-blue-400 hover:text-blue-300 mt-2"
-              >
-                <ExternalLink size={12} />
-                Ver en GitHub
-              </a>
             </div>
           </div>
         );

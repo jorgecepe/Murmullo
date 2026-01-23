@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openLogsFolder: () => ipcRenderer.invoke('open-logs-folder'),
   clearOldLogs: (keepDays) => ipcRenderer.invoke('clear-old-logs', keepDays),
 
+  // App Info
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

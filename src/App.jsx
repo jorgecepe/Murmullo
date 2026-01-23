@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Settings, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Check, AlertCircle, Loader2 } from 'lucide-react';
 
 // Status states
 const STATUS = {
@@ -145,21 +145,35 @@ function App() {
       const mediaRecorder = new MediaRecorder(stream, options);
       console.log('[App] MediaRecorder created, actual mimeType:', mediaRecorder.mimeType);
 
+      // Create a unique session ID to prevent chunk contamination between recordings
+      const sessionId = Date.now();
       audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        console.log('[App] Audio data available, size:', event.data.size);
+        console.log('[App] Audio data available, size:', event.data.size, 'session:', sessionId);
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorder.onstop = async () => {
-        console.log('[App] MediaRecorder stopped, chunks:', audioChunksRef.current.length);
+        console.log('[App] MediaRecorder stopped, chunks:', audioChunksRef.current.length, 'session:', sessionId);
+
+        if (audioChunksRef.current.length === 0) {
+          console.error('[App] No audio chunks collected!');
+          setStatus(STATUS.ERROR);
+          setErrorMessage('No se grabó audio. Intenta de nuevo.');
+          return;
+        }
+
         const actualMimeType = mediaRecorder.mimeType || 'audio/webm';
         console.log('[App] Using mimeType for blob:', actualMimeType);
         const audioBlob = new Blob(audioChunksRef.current, { type: actualMimeType });
         console.log('[App] Audio blob created, size:', audioBlob.size, 'type:', audioBlob.type);
+
+        // Clear chunks immediately after creating blob to prevent contamination
+        audioChunksRef.current = [];
+
         await processAudio(audioBlob);
 
         // Stop all tracks
@@ -169,10 +183,12 @@ function App() {
 
       mediaRecorder.onerror = (event) => {
         console.error('[App] MediaRecorder error:', event.error);
+        audioChunksRef.current = []; // Clear on error too
       };
 
       mediaRecorderRef.current = mediaRecorder;
-      mediaRecorder.start(100); // Collect data every 100ms
+      // Don't use timeslice - record everything in one chunk to ensure valid EBML header
+      mediaRecorder.start();
       console.log('[App] Recording started');
       setStatus(STATUS.RECORDING);
       setErrorMessage('');
@@ -185,11 +201,8 @@ function App() {
 
   const stopRecording = useCallback(() => {
     console.log('[App] Stopping recording...');
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      // Request any remaining data before stopping
-      if (mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.requestData();
-      }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      // Just stop - don't use requestData() as it can cause issues
       mediaRecorderRef.current.stop();
       console.log('[App] MediaRecorder.stop() called');
       setStatus(STATUS.PROCESSING);
@@ -198,6 +211,79 @@ function App() {
     }
   }, []);
 
+  // Convert audio blob to WAV format using Web Audio API
+  // This avoids the Chromium bug where MediaRecorder produces corrupted WebM headers
+  const convertToWav = async (audioBlob) => {
+    console.log('[App] Converting audio to WAV format...');
+
+    const arrayBuffer = await audioBlob.arrayBuffer();
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    try {
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      console.log('[App] Decoded audio: duration=', audioBuffer.duration, 'sampleRate=', audioBuffer.sampleRate);
+
+      // Convert to 16kHz mono WAV (optimal for Whisper)
+      const targetSampleRate = 16000;
+      const numChannels = 1;
+
+      // Resample if needed
+      let samples;
+      if (audioBuffer.sampleRate !== targetSampleRate) {
+        const offlineContext = new OfflineAudioContext(numChannels, audioBuffer.duration * targetSampleRate, targetSampleRate);
+        const source = offlineContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(offlineContext.destination);
+        source.start(0);
+        const resampledBuffer = await offlineContext.startRendering();
+        samples = resampledBuffer.getChannelData(0);
+      } else {
+        samples = audioBuffer.getChannelData(0);
+      }
+
+      // Convert float32 samples to int16
+      const int16Samples = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        int16Samples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      // Create WAV file
+      const wavBuffer = new ArrayBuffer(44 + int16Samples.length * 2);
+      const view = new DataView(wavBuffer);
+
+      // WAV header
+      const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+          view.setUint8(offset + i, string.charCodeAt(i));
+        }
+      };
+
+      writeString(0, 'RIFF');
+      view.setUint32(4, 36 + int16Samples.length * 2, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true); // PCM chunk size
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, targetSampleRate, true);
+      view.setUint32(28, targetSampleRate * numChannels * 2, true); // byte rate
+      view.setUint16(32, numChannels * 2, true); // block align
+      view.setUint16(34, 16, true); // bits per sample
+      writeString(36, 'data');
+      view.setUint32(40, int16Samples.length * 2, true);
+
+      // Write samples
+      const dataView = new Int16Array(wavBuffer, 44);
+      dataView.set(int16Samples);
+
+      console.log('[App] WAV conversion complete, size:', wavBuffer.byteLength);
+      return wavBuffer;
+    } finally {
+      await audioContext.close();
+    }
+  };
+
   const processAudio = async (audioBlob) => {
     console.log('[App] Processing audio, blob size:', audioBlob.size);
     try {
@@ -205,8 +291,16 @@ function App() {
         throw new Error('No se grabó audio. Por favor intenta de nuevo.');
       }
 
-      // Convert blob to ArrayBuffer
-      const arrayBuffer = await audioBlob.arrayBuffer();
+      // Convert to WAV to avoid Chromium's corrupted WebM header bug
+      let arrayBuffer;
+      try {
+        arrayBuffer = await convertToWav(audioBlob);
+        console.log('[App] Using WAV format, size:', arrayBuffer.byteLength);
+      } catch (conversionError) {
+        console.warn('[App] WAV conversion failed, falling back to original format:', conversionError);
+        arrayBuffer = await audioBlob.arrayBuffer();
+      }
+
       console.log('[App] ArrayBuffer size:', arrayBuffer.byteLength);
 
       // Get current API keys from localStorage (in case they were updated)
@@ -289,70 +383,33 @@ function App() {
     }
   };
 
-  const handleClick = () => {
-    if (status === STATUS.IDLE) {
-      startRecording();
-    } else if (status === STATUS.RECORDING) {
-      stopRecording();
-    }
-  };
-
-  const openSettings = () => {
-    window.electronAPI?.showControlPanel();
-  };
-
+  // Minimal floating indicator - just a small circle that shows status
+  // No click needed - only responds to hotkey (Ctrl+Shift+Space)
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 flex flex-col items-center justify-center p-4">
-      {/* Settings button */}
-      <button
-        onClick={openSettings}
-        className="absolute top-3 right-3 p-2 text-slate-400 hover:text-white transition-colors rounded-lg hover:bg-slate-700"
-        title="Configuración"
-      >
-        <Settings size={20} />
-      </button>
-
-      {/* Main status indicator */}
-      <button
-        onClick={handleClick}
-        disabled={status === STATUS.PROCESSING}
+    <div className="w-[60px] h-[60px] flex items-center justify-center bg-transparent">
+      {/* Minimal status indicator */}
+      <div
         className={`
-          w-24 h-24 rounded-full flex items-center justify-center transition-all duration-300
-          ${status === STATUS.IDLE ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : ''}
-          ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white' : ''}
-          ${status === STATUS.PROCESSING ? 'bg-blue-500 text-white' : ''}
-          ${status === STATUS.SUCCESS ? 'bg-green-500 text-white' : ''}
-          ${status === STATUS.ERROR ? 'bg-red-600 text-white' : ''}
+          w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg
+          ${status === STATUS.IDLE ? 'bg-slate-700/90 text-slate-400' : ''}
+          ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white shadow-red-500/50' : ''}
+          ${status === STATUS.PROCESSING ? 'bg-blue-500 text-white shadow-blue-500/50' : ''}
+          ${status === STATUS.SUCCESS ? 'bg-green-500 text-white shadow-green-500/50' : ''}
+          ${status === STATUS.ERROR ? 'bg-red-600 text-white shadow-red-600/50' : ''}
         `}
+        title={
+          status === STATUS.IDLE ? 'Murmullo - Ctrl+Shift+Space para grabar' :
+          status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
+          status === STATUS.PROCESSING ? 'Procesando...' :
+          status === STATUS.SUCCESS ? 'Listo' :
+          errorMessage || 'Error'
+        }
       >
-        {status === STATUS.IDLE && <Mic size={40} />}
-        {status === STATUS.RECORDING && <MicOff size={40} />}
-        {status === STATUS.PROCESSING && <Loader2 size={40} className="animate-spin" />}
-        {status === STATUS.SUCCESS && <Check size={40} />}
-        {status === STATUS.ERROR && <AlertCircle size={40} />}
-      </button>
-
-      {/* Status text */}
-      <div className="mt-4 text-center px-4">
-        <p className="text-slate-300 text-sm">
-          {status === STATUS.IDLE && 'Presiona Ctrl+Shift+Space o haz clic'}
-          {status === STATUS.RECORDING && 'Grabando... (presiona de nuevo para detener)'}
-          {status === STATUS.PROCESSING && 'Procesando...'}
-          {status === STATUS.SUCCESS && 'Texto copiado'}
-          {status === STATUS.ERROR && errorMessage}
-        </p>
-      </div>
-
-      {/* Last transcription preview */}
-      {lastText && status === STATUS.SUCCESS && (
-        <div className="mt-4 p-3 bg-slate-700/50 rounded-lg max-w-full">
-          <p className="text-slate-300 text-xs truncate max-w-[280px]">{lastText}</p>
-        </div>
-      )}
-
-      {/* Mode indicator */}
-      <div className="absolute bottom-3 left-3 text-xs text-slate-500">
-        Modo: {settings.processingMode === 'smart' ? 'Inteligente' : 'Rápido'}
+        {status === STATUS.IDLE && <Mic size={20} />}
+        {status === STATUS.RECORDING && <MicOff size={20} />}
+        {status === STATUS.PROCESSING && <Loader2 size={20} className="animate-spin" />}
+        {status === STATUS.SUCCESS && <Check size={20} />}
+        {status === STATUS.ERROR && <AlertCircle size={20} />}
       </div>
     </div>
   );
