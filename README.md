@@ -34,9 +34,9 @@ Los términos técnicos se mantienen en inglés automáticamente.
 ### Desde Releases (Recomendado)
 
 Descarga el instalador desde [Releases](../../releases):
-- **Windows**: `Murmullo-Setup-1.0.0.exe`
-- **macOS**: `Murmullo-1.0.0.dmg`
-- **Linux**: `Murmullo-1.0.0.AppImage`
+- **Windows**: `Murmullo Setup 1.1.0.exe` (instalador) o `Murmullo-Portable-1.1.0.exe` (portable)
+- **macOS**: `Murmullo-1.1.0.dmg`
+- **Linux**: `Murmullo-1.1.0.AppImage`
 
 ### Desde el Código Fuente
 
@@ -62,9 +62,7 @@ npm run dev
 
 ## Documentación
 
-- [README_ES.md](./README_ES.md) - Guía completa en español
-- [ARQUITECTURA.md](./ARQUITECTURA.md) - Documentación técnica
-- [DECISIONES.md](./DECISIONES.md) - Log de decisiones técnicas
+- [CHANGELOG.md](./CHANGELOG.md) - Historial de cambios
 - [CLAUDE.md](./CLAUDE.md) - Referencia técnica para IA
 
 ## Origen del Proyecto (Fork)
@@ -83,7 +81,7 @@ Murmullo es un fork de **[Open-Whispr](https://github.com/HeroTools/open-whispr)
 
 ### Sincronización con Upstream
 
-Mantenemos compatibilidad con Open-Whispr para poder incorporar mejoras futuras. Los archivos modificados están documentados en [CLAUDE.md](./CLAUDE.md#upstream-synchronization).
+Mantenemos compatibilidad con Open-Whispr para poder incorporar mejoras futuras.
 
 ## Desarrollo
 
