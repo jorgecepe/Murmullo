@@ -684,8 +684,7 @@ function setupIpcHandlers() {
       let formattedText = formatNumberedLists(result.text);
 
       log('=== TRANSCRIBE AUDIO SUCCESS ===');
-      log('Transcribed text (original):', result.text);
-      log('Transcribed text (formatted):', formattedText);
+      log('Transcription complete - words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
       log(`Whisper API latency: ${elapsedTime}ms (no FFmpeg conversion)`);
 
       // Log action for analytics (word count, latency - no personal content)
@@ -708,8 +707,8 @@ function setupIpcHandlers() {
   // Process text with AI
   ipcMain.handle('process-text', async (event, text, options) => {
     log('=== PROCESS TEXT START ===');
-    log('Text:', text?.substring(0, 100));
-    log('Options:', JSON.stringify(options || {}));
+    log('Input length:', text?.length || 0, 'words:', text?.split(/\s+/).length || 0);
+    log('Options:', JSON.stringify({ provider: options?.provider, model: options?.model }));
 
     try {
       const provider = options?.provider || 'anthropic';
@@ -783,11 +782,8 @@ Output el texto completo corregido, sin comillas.`;
         const result = await response.json();
         const processedText = result.content[0].text;
 
-        // Log comparison for debugging
-        log('=== WHISPER vs CLAUDE COMPARISON ===');
-        log('WHISPER (original):', text);
-        log('CLAUDE (processed):', processedText);
-        log('=== END COMPARISON ===');
+        // Log metadata only (no content for privacy)
+        log('AI processing complete - input words:', text.split(/\s+/).length, 'output words:', processedText.split(/\s+/).length);
 
         // Log action for analytics
         logAction('AI_PROCESSING_COMPLETE', {
@@ -833,7 +829,7 @@ Output el texto completo corregido, sin comillas.`;
         }
 
         const result = await response.json();
-        log('OpenAI result:', JSON.stringify(result).substring(0, 200));
+        log('OpenAI processing complete');
         return { success: true, text: result.choices[0].message.content };
       }
 
@@ -846,7 +842,7 @@ Output el texto completo corregido, sin comillas.`;
 
   // Paste text (preserves original clipboard content)
   ipcMain.handle('paste-text', async (event, text) => {
-    log('Pasting text:', text?.substring(0, 50));
+    log('Pasting text - length:', text?.length || 0, 'words:', text?.split(/\s+/).length || 0);
     try {
       // Save current clipboard content to restore later
       const originalClipboard = clipboard.readText();
@@ -947,7 +943,7 @@ Output el texto completo corregido, sin comillas.`;
   });
 
   ipcMain.handle('save-transcription', (event, data) => {
-    log('Saving transcription:', data?.original_text?.substring(0, 50));
+    log('Saving transcription - words:', data?.original_text?.split(/\s+/).length || 0, 'processed:', !!data?.processed_text);
     if (!db) return { success: false, error: 'Database not initialized' };
     try {
       const timestamp = new Date().toISOString();
