@@ -46,11 +46,15 @@ Ver plan completo en: `~/.claude/plans/curious-seeking-porcupine.md`
 - [x] Configurar GitHub Actions - `.github/workflows/ci.yml` creado
 - [x] E2E tests básicos con Playwright para Electron
 
-### Fase 3: Backend MVP
-- Diseñar API REST
-- Implementar autenticación JWT
-- Proxy de APIs (Whisper, Claude)
-- Rate limiting
+### Fase 3: Backend MVP ✅ COMPLETADA
+- [x] Diseñar API REST - Express.js con rutas modulares
+- [x] Implementar autenticación JWT - Login, registro, refresh tokens
+- [x] Proxy de Whisper API - `/api/v1/transcription`
+- [x] Proxy de Claude/GPT API - `/api/v1/ai/process`
+- [x] Rate limiting - Por endpoint con express-rate-limit
+- [x] Base de datos PostgreSQL - Migraciones incluidas
+- [x] Tracking de uso - Por usuario con límites por plan
+- [x] Documentación API - README.md con endpoints
 
 ### Fase 4: Monetización
 - Integrar Stripe
