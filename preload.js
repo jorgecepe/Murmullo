@@ -63,6 +63,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
 
+  // Debug Audio
+  getDebugAudioSettings: () => ipcRenderer.invoke('get-debug-audio-settings'),
+  setDebugAudioEnabled: (enabled) => ipcRenderer.invoke('set-debug-audio-enabled', enabled),
+  openDebugAudioFolder: () => ipcRenderer.invoke('open-debug-audio-folder'),
+  clearDebugAudio: () => ipcRenderer.invoke('clear-debug-audio'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

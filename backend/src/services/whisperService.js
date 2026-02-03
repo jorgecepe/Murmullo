@@ -14,7 +14,9 @@ export async function transcribeAudio(audioBuffer, options = {}) {
   const {
     language = 'es',
     model = 'whisper-1',
-    responseFormat = 'json'
+    responseFormat = 'json',
+    // Prompt helps reduce hallucinations by anchoring Whisper to expected content
+    prompt = 'Transcripción literal de dictado de voz en español. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.'
   } = options;
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -34,6 +36,12 @@ export async function transcribeAudio(audioBuffer, options = {}) {
     formData.append('model', model);
     formData.append('language', language);
     formData.append('response_format', responseFormat);
+    // Prompt helps anchor Whisper and reduce hallucinations
+    if (prompt) {
+      formData.append('prompt', prompt);
+    }
+    // Temperature 0 = most deterministic/literal transcription
+    formData.append('temperature', '0');
 
     // Make API request
     const response = await fetch(OPENAI_API_URL, {

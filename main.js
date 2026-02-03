@@ -8,8 +8,11 @@ const { autoUpdater } = require('electron-updater');
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
-// SAVE_DEBUG_AUDIO - set to true to save audio files for testing (saves to %APPDATA%/murmullo/debug_audio/)
-const SAVE_DEBUG_AUDIO = false;
+
+// Debug audio mode - saves all audio files for investigation
+// Controlled via config file 'debugAudioEnabled' setting
+// Audio files saved to %APPDATA%/murmullo/debug_audio/ with metadata JSON
+let debugAudioEnabled = false;
 
 // ==========================================
 // PERSISTENT LOGGING SYSTEM
@@ -148,6 +151,101 @@ function maskApiKey(key) {
 }
 
 // ==========================================
+// DEBUG AUDIO SAVING
+// ==========================================
+// Saves audio files and metadata for investigating transcription issues
+
+async function saveDebugAudio(audioData, originalText, processedText, processingMode, latencyMs, source) {
+  if (!debugAudioEnabled) {
+    return; // Debug mode disabled
+  }
+
+  try {
+    const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
+    if (!fs.existsSync(debugAudioDir)) {
+      fs.mkdirSync(debugAudioDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const baseFilename = `audio_${timestamp}`;
+
+    // Detect audio format from header
+    const audioBuffer = Buffer.from(audioData);
+    const headerHex = audioBuffer.slice(0, 4).toString('hex');
+    const headerString = audioBuffer.slice(0, 4).toString('ascii');
+
+    let ext = 'bin'; // default
+    if (headerString === 'RIFF') {
+      ext = 'wav';
+    } else if (headerHex === '1a45dfa3') {
+      ext = 'webm';
+    }
+
+    // Save audio file
+    const audioPath = path.join(debugAudioDir, `${baseFilename}.${ext}`);
+    fs.writeFileSync(audioPath, audioBuffer);
+
+    // Save metadata JSON
+    const metadata = {
+      timestamp: new Date().toISOString(),
+      audioFile: `${baseFilename}.${ext}`,
+      audioSizeBytes: audioBuffer.length,
+      audioFormat: ext,
+      processingMode,
+      source, // 'backend' or 'local'
+      latencyMs,
+      originalText, // Raw Whisper output
+      processedText, // After formatting/AI processing
+      textWasModified: originalText !== processedText,
+      wordCountOriginal: originalText?.split(/\s+/).filter(w => w).length || 0,
+      wordCountProcessed: processedText?.split(/\s+/).filter(w => w).length || 0,
+      appVersion: app.getVersion()
+    };
+
+    const metadataPath = path.join(debugAudioDir, `${baseFilename}.json`);
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+
+    log('DEBUG AUDIO: Saved', audioPath);
+    log('DEBUG AUDIO: Metadata', metadataPath);
+
+    // Clean up old debug files (keep last 100)
+    cleanupOldDebugFiles(debugAudioDir, 100);
+
+  } catch (err) {
+    logError('DEBUG AUDIO: Failed to save:', err.message);
+    // Don't throw - this is a debug feature, shouldn't break main functionality
+  }
+}
+
+// Clean up old debug files, keeping only the most recent N files
+function cleanupOldDebugFiles(debugDir, keepCount) {
+  try {
+    const files = fs.readdirSync(debugDir)
+      .map(f => ({
+        name: f,
+        path: path.join(debugDir, f),
+        time: fs.statSync(path.join(debugDir, f)).mtime.getTime()
+      }))
+      .sort((a, b) => b.time - a.time);
+
+    // Group by base filename (audio + json pairs)
+    const uniqueBases = [...new Set(files.map(f => f.name.replace(/\.(wav|webm|bin|json)$/, '')))];
+
+    if (uniqueBases.length > keepCount) {
+      const basesToDelete = uniqueBases.slice(keepCount);
+      for (const base of basesToDelete) {
+        for (const file of files.filter(f => f.name.startsWith(base))) {
+          fs.unlinkSync(file.path);
+          log('DEBUG AUDIO: Cleaned up old file:', file.name);
+        }
+      }
+    }
+  } catch (err) {
+    // Ignore cleanup errors
+  }
+}
+
+// ==========================================
 // CONTENT SECURITY POLICY
 // ==========================================
 function setupContentSecurityPolicy() {
@@ -236,7 +334,8 @@ function loadBackendSettings() {
       backendUrl = config.backendUrl || 'http://localhost:3000';
       backendAccessToken = config.backendAccessToken || null;
       backendRefreshToken = config.backendRefreshToken || null;
-      log('Backend settings loaded:', { backendMode, backendUrl, hasToken: !!backendAccessToken });
+      debugAudioEnabled = config.debugAudioEnabled || false;
+      log('Backend settings loaded:', { backendMode, backendUrl, hasToken: !!backendAccessToken, debugAudioEnabled });
     }
   } catch (err) {
     log('No backend settings found, using defaults');
@@ -289,6 +388,7 @@ function saveBackendSettings() {
     config.backendUrl = backendUrl;
     config.backendAccessToken = backendAccessToken;
     config.backendRefreshToken = backendRefreshToken;
+    config.debugAudioEnabled = debugAudioEnabled;
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     log('Backend settings saved');
   } catch (err) {
@@ -887,9 +987,10 @@ function setupIpcHandlers() {
       return { success: false, error: validation.error };
     }
 
+    const processingMode = options?.processingMode || 'fast'; // verbatim, fast, or smart
     log('=== TRANSCRIBE AUDIO START ===');
     log('Audio data length:', audioData?.length || 0);
-    log('Options:', JSON.stringify({ language: options?.language }));
+    log('Options:', JSON.stringify({ language: options?.language, processingMode }));
     log('Backend mode:', backendMode, 'Has token:', !!backendAccessToken);
 
     // If backend mode is enabled and user is authenticated, use backend
@@ -899,20 +1000,25 @@ function setupIpcHandlers() {
         const result = await transcribeViaBackend(audioData, options);
         const elapsedTime = Date.now() - startTime;
 
-        // Apply list formatting
-        let formattedText = formatNumberedLists(result.text);
+        // Apply list formatting only if NOT verbatim mode
+        let formattedText = processingMode === 'verbatim' ? result.text : formatNumberedLists(result.text);
 
         log('=== BACKEND TRANSCRIBE SUCCESS ===');
+        log('Processing mode:', processingMode);
         log('Words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
         log(`Backend latency: ${elapsedTime}ms`);
+
+        // Save debug audio if enabled
+        await saveDebugAudio(audioData, result.text, formattedText, processingMode, elapsedTime, 'backend');
 
         logAction('TRANSCRIPTION_COMPLETE_BACKEND', {
           wordCount: formattedText.split(/\s+/).length,
           latencyMs: elapsedTime,
-          audioSizeKB: Math.round(audioData.length / 1024)
+          audioSizeKB: Math.round(audioData.length / 1024),
+          processingMode
         });
 
-        return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true };
+        return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true, processingMode };
       } catch (error) {
         logError('Backend transcription failed:', error.message);
         // If backend fails, we could fall back to local mode, but for now return error
@@ -1075,24 +1181,6 @@ function setupIpcHandlers() {
         }
       }
 
-      // Save audio files for testing purposes (with correct extension)
-      // Enable SAVE_DEBUG_AUDIO at top of file to capture audio samples
-      if (SAVE_DEBUG_AUDIO) {
-        try {
-          const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
-          if (!fs.existsSync(debugAudioDir)) {
-            fs.mkdirSync(debugAudioDir, { recursive: true });
-          }
-          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const ext = uploadFilename.split('.').pop(); // wav, webm, etc.
-          const debugAudioPath = path.join(debugAudioDir, `audio_${timestamp}.${ext}`);
-          fs.writeFileSync(debugAudioPath, fileBuffer);
-          log('DEBUG: Audio saved to:', debugAudioPath);
-        } catch (debugErr) {
-          log('DEBUG: Failed to save audio file:', debugErr.message);
-        }
-      }
-
       // Build multipart form manually (native fetch + form-data package don't work well together)
       const boundary = '----WebKitFormBoundary' + Math.random().toString(36).substring(2);
       const CRLF = '\r\n';
@@ -1120,6 +1208,20 @@ function setupIpcHandlers() {
         `--${boundary}${CRLF}`,
         `Content-Disposition: form-data; name="language"${CRLF}${CRLF}`,
         `${options?.language || 'es'}${CRLF}`
+      );
+
+      // Prompt part - helps anchor Whisper and reduce hallucinations
+      parts.push(
+        `--${boundary}${CRLF}`,
+        `Content-Disposition: form-data; name="prompt"${CRLF}${CRLF}`,
+        `Transcripción literal de dictado de voz en español. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.${CRLF}`
+      );
+
+      // Temperature part - 0 = most deterministic/literal transcription
+      parts.push(
+        `--${boundary}${CRLF}`,
+        `Content-Disposition: form-data; name="temperature"${CRLF}${CRLF}`,
+        `0${CRLF}`
       );
 
       // End boundary
@@ -1153,22 +1255,27 @@ function setupIpcHandlers() {
       const result = await response.json();
       const elapsedTime = Date.now() - startTime;
 
-      // Lightweight list formatting (no AI needed)
-      let formattedText = formatNumberedLists(result.text);
+      // Apply list formatting only if NOT verbatim mode
+      let formattedText = processingMode === 'verbatim' ? result.text : formatNumberedLists(result.text);
 
       log('=== TRANSCRIBE AUDIO SUCCESS ===');
+      log('Processing mode:', processingMode);
       log('Transcription complete - words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
       log(`Whisper API latency: ${elapsedTime}ms (no FFmpeg conversion)`);
+
+      // Save debug audio if enabled
+      await saveDebugAudio(audioData, result.text, formattedText, processingMode, elapsedTime, 'local');
 
       // Log action for analytics (word count, latency - no personal content)
       logAction('TRANSCRIPTION_COMPLETE', {
         wordCount: formattedText.split(/\s+/).length,
         latencyMs: elapsedTime,
         audioSizeKB: Math.round(audioData.length / 1024),
-        listFormatted: formattedText !== result.text
+        listFormatted: formattedText !== result.text,
+        processingMode
       });
 
-      return { success: true, text: formattedText, latencyMs: elapsedTime };
+      return { success: true, text: formattedText, latencyMs: elapsedTime, processingMode };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
       logError('Error:', error.message);
@@ -2023,6 +2130,82 @@ Output el texto completo corregido, sin comillas.`;
     // This will quit the app and install the update
     autoUpdater.quitAndInstall(false, true);
     return { success: true };
+  });
+
+  // ==========================================
+  // DEBUG AUDIO HANDLERS
+  // ==========================================
+
+  // Get debug audio settings
+  ipcMain.handle('get-debug-audio-settings', () => {
+    const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
+    let fileCount = 0;
+    let totalSizeKB = 0;
+
+    if (fs.existsSync(debugAudioDir)) {
+      const files = fs.readdirSync(debugAudioDir);
+      fileCount = files.filter(f => f.endsWith('.wav') || f.endsWith('.webm') || f.endsWith('.bin')).length;
+      totalSizeKB = Math.round(files.reduce((acc, f) => {
+        try {
+          return acc + fs.statSync(path.join(debugAudioDir, f)).size;
+        } catch {
+          return acc;
+        }
+      }, 0) / 1024);
+    }
+
+    return {
+      enabled: debugAudioEnabled,
+      path: debugAudioDir,
+      fileCount,
+      totalSizeKB
+    };
+  });
+
+  // Set debug audio enabled
+  ipcMain.handle('set-debug-audio-enabled', (event, enabled) => {
+    log('Setting debug audio mode:', enabled);
+    debugAudioEnabled = enabled;
+    saveBackendSettings();
+    logAction('DEBUG_AUDIO_MODE_CHANGED', { enabled });
+    return { success: true, enabled: debugAudioEnabled };
+  });
+
+  // Open debug audio folder
+  ipcMain.handle('open-debug-audio-folder', () => {
+    const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
+    if (!fs.existsSync(debugAudioDir)) {
+      fs.mkdirSync(debugAudioDir, { recursive: true });
+    }
+    shell.openPath(debugAudioDir);
+    logAction('DEBUG_AUDIO_FOLDER_OPENED');
+    return { success: true, path: debugAudioDir };
+  });
+
+  // Clear all debug audio files
+  ipcMain.handle('clear-debug-audio', () => {
+    try {
+      const debugAudioDir = path.join(app.getPath('userData'), 'debug_audio');
+      if (fs.existsSync(debugAudioDir)) {
+        const files = fs.readdirSync(debugAudioDir);
+        let deletedCount = 0;
+        for (const file of files) {
+          try {
+            fs.unlinkSync(path.join(debugAudioDir, file));
+            deletedCount++;
+          } catch (e) {
+            // Ignore individual file errors
+          }
+        }
+        log('Cleared debug audio files:', deletedCount);
+        logAction('DEBUG_AUDIO_CLEARED', { deletedCount });
+        return { success: true, deleted: deletedCount };
+      }
+      return { success: true, deleted: 0 };
+    } catch (error) {
+      logError('Failed to clear debug audio:', error.message);
+      return { success: false, error: error.message };
+    }
   });
 
   log('IPC handlers set up');

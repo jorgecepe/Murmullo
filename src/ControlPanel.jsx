@@ -124,6 +124,26 @@ function ControlPanel() {
     currentVersion: '...'
   });
 
+  // Debug audio state
+  const [debugAudioSettings, setDebugAudioSettings] = useState({
+    enabled: false,
+    path: '',
+    fileCount: 0,
+    totalSizeKB: 0
+  });
+
+  // Load debug audio settings
+  const loadDebugAudioSettings = async () => {
+    if (window.electronAPI?.getDebugAudioSettings) {
+      try {
+        const settings = await window.electronAPI.getDebugAudioSettings();
+        setDebugAudioSettings(settings);
+      } catch (err) {
+        console.error('Failed to load debug audio settings:', err);
+      }
+    }
+  };
+
   // Load settings on mount
   useEffect(() => {
     const loadedSettings = {
@@ -212,6 +232,9 @@ function ControlPanel() {
         }));
       });
     }
+
+    // Load debug audio settings
+    loadDebugAudioSettings();
 
     // Listen for update status changes
     let unsubscribeUpdate;
@@ -659,11 +682,14 @@ function ControlPanel() {
                 onChange={(e) => handleSettingChange('processingMode', e.target.value)}
                 className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="fast">Rápido (solo transcripción)</option>
+                <option value="verbatim">Literal (sin ningún cambio)</option>
+                <option value="fast">Rápido (formato de listas)</option>
                 <option value="smart">Inteligente (con corrección IA)</option>
               </select>
               <p className="mt-1 text-xs text-slate-400">
-                El modo inteligente corrige gramática y preserva términos técnicos en inglés.
+                {settings.processingMode === 'verbatim' && 'Transcripción exacta de Whisper, sin modificaciones.'}
+                {settings.processingMode === 'fast' && 'Transcripción con formato automático de listas numeradas.'}
+                {settings.processingMode === 'smart' && 'Corrige ortografía y preserva términos técnicos en inglés.'}
               </p>
             </div>
 
@@ -728,6 +754,69 @@ function ControlPanel() {
                   />
                 </button>
               </div>
+            </div>
+
+            {/* Debug Audio Mode */}
+            <div className="p-4 bg-slate-700/50 rounded-lg border border-amber-500/30">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="font-medium text-amber-400 flex items-center gap-2">
+                    <FileText className="w-4 h-4" />
+                    Modo debug de audio
+                  </h3>
+                  <p className="text-sm text-slate-400">
+                    Guarda archivos de audio y metadatos para investigar alucinaciones
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    const newValue = !debugAudioSettings.enabled;
+                    if (window.electronAPI?.setDebugAudioEnabled) {
+                      await window.electronAPI.setDebugAudioEnabled(newValue);
+                      loadDebugAudioSettings();
+                    }
+                  }}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    debugAudioSettings.enabled ? 'bg-amber-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      debugAudioSettings.enabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              {debugAudioSettings.enabled && (
+                <div className="space-y-2 pt-2 border-t border-slate-600">
+                  <p className="text-xs text-slate-400">
+                    Archivos guardados: {debugAudioSettings.fileCount} ({debugAudioSettings.totalSizeKB} KB)
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => window.electronAPI?.openDebugAudioFolder()}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-xs text-white transition-colors"
+                    >
+                      <FolderOpen className="w-3 h-3" />
+                      Abrir carpeta
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (window.electronAPI?.clearDebugAudio) {
+                          const result = await window.electronAPI.clearDebugAudio();
+                          if (result.success) {
+                            loadDebugAudioSettings();
+                          }
+                        }
+                      }}
+                      className="flex items-center gap-1 px-3 py-1.5 bg-red-600/50 hover:bg-red-600 rounded text-xs text-white transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Limpiar ({debugAudioSettings.fileCount})
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );

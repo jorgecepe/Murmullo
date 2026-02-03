@@ -374,7 +374,8 @@ function App() {
         Array.from(new Uint8Array(arrayBuffer)),
         {
           language: settings.language,
-          apiKey: currentOpenAIKey
+          apiKey: currentOpenAIKey,
+          processingMode: settings.processingMode // verbatim, fast, or smart
         }
       );
 
