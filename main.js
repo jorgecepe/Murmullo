@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
@@ -145,6 +145,53 @@ function maskApiKey(key) {
   return `${prefix}...${suffix}`;
 }
 
+// ==========================================
+// CONTENT SECURITY POLICY
+// ==========================================
+function setupContentSecurityPolicy() {
+  // Define CSP based on environment
+  const cspDirectives = [
+    "default-src 'self'",
+    // Scripts: self only in production, allow unsafe-eval in dev for hot reload
+    isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'" : "script-src 'self'",
+    // Styles: allow inline for Tailwind CSS
+    "style-src 'self' 'unsafe-inline'",
+    // Images: self and data URIs (for inline icons)
+    "img-src 'self' data: blob:",
+    // Fonts: self only
+    "font-src 'self'",
+    // Connections: self + API endpoints
+    "connect-src 'self' https://api.openai.com https://api.anthropic.com" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
+    // Media: self for audio recording
+    "media-src 'self' blob:",
+    // Workers: self
+    "worker-src 'self' blob:",
+    // Child/Frame: none (no iframes)
+    "child-src 'none'",
+    "frame-src 'none'",
+    // Object: none (no plugins)
+    "object-src 'none'",
+    // Base URI: self
+    "base-uri 'self'",
+    // Form action: self
+    "form-action 'self'"
+  ];
+
+  const csp = cspDirectives.join('; ');
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp]
+      }
+    });
+  });
+
+  log('Content Security Policy configured');
+  log('CSP:', csp);
+}
+
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -243,7 +290,10 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      enableRemoteModule: false
     }
   });
 
@@ -283,7 +333,10 @@ function createControlPanel() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      enableRemoteModule: false
     }
   });
 
@@ -1258,6 +1311,9 @@ app.whenReady().then(async () => {
     const secureStoragePath = path.join(app.getPath('userData'), 'secure-keys.json');
     secureStorage = new SecureStorage(secureStoragePath);
     log('Secure storage initialized, encryption available:', secureStorage.isEncryptionAvailable());
+
+    // Setup Content Security Policy
+    setupContentSecurityPolicy();
 
     // Load .env file if exists (for development/migration only)
     const envPath = path.join(__dirname, '.env');
