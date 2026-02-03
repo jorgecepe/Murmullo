@@ -3,6 +3,7 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const SecureStorage = require('./secureStorage');
+const { validateIpcMessage, sanitizeString } = require('./ipcValidation');
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
@@ -490,15 +491,34 @@ function registerHotkey(newHotkey = null) {
   }
 }
 
+// Helper to create validated IPC handler
+function createValidatedHandler(channel, handler) {
+  return async (event, ...args) => {
+    const validation = validateIpcMessage(channel, ...args);
+    if (!validation.isValid) {
+      logError(`IPC validation failed for ${channel}:`, validation.error);
+      return { success: false, error: `Validation error: ${validation.error}` };
+    }
+    return handler(event, ...args);
+  };
+}
+
 // IPC Handlers
 function setupIpcHandlers() {
   log('Setting up IPC handlers...');
 
   // Transcribe audio
   ipcMain.handle('transcribe-audio', async (event, audioData, options) => {
+    // Validate input
+    const validation = validateIpcMessage('transcribe-audio', audioData, options);
+    if (!validation.isValid) {
+      logError('Transcribe validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     log('=== TRANSCRIBE AUDIO START ===');
     log('Audio data length:', audioData?.length || 0);
-    log('Options:', JSON.stringify(options || {}));
+    log('Options:', JSON.stringify({ language: options?.language }));
 
     try {
       // Get API key from secure storage, then options, then env
@@ -759,8 +779,18 @@ function setupIpcHandlers() {
 
   // Process text with AI
   ipcMain.handle('process-text', async (event, text, options) => {
+    // Validate input
+    const validation = validateIpcMessage('process-text', text, options);
+    if (!validation.isValid) {
+      logError('Process-text validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    // Sanitize text input
+    const sanitizedText = sanitizeString(text, 50000); // Max 50k chars
+
     log('=== PROCESS TEXT START ===');
-    log('Input length:', text?.length || 0, 'words:', text?.split(/\s+/).length || 0);
+    log('Input length:', sanitizedText?.length || 0, 'words:', sanitizedText?.split(/\s+/).length || 0);
     log('Options:', JSON.stringify({ provider: options?.provider, model: options?.model }));
 
     try {
@@ -809,7 +839,7 @@ Output el texto completo corregido, sin comillas.`;
           model: options?.model || 'claude-3-haiku-20240307',
           max_tokens: 1024,
           system: systemPrompt,
-          messages: [{ role: 'user', content: text }]
+          messages: [{ role: 'user', content: sanitizedText }]
         };
 
         const response = await fetch(endpoint, {
@@ -836,13 +866,13 @@ Output el texto completo corregido, sin comillas.`;
         const processedText = result.content[0].text;
 
         // Log metadata only (no content for privacy)
-        log('AI processing complete - input words:', text.split(/\s+/).length, 'output words:', processedText.split(/\s+/).length);
+        log('AI processing complete - input words:', sanitizedText.split(/\s+/).length, 'output words:', processedText.split(/\s+/).length);
 
         // Log action for analytics
         logAction('AI_PROCESSING_COMPLETE', {
           provider: 'anthropic',
           model: options?.model || 'claude-3-haiku-20240307',
-          inputWords: text.split(/\s+/).length,
+          inputWords: sanitizedText.split(/\s+/).length,
           outputWords: processedText.split(/\s+/).length,
           latencyMs: aiLatency
         });
@@ -860,7 +890,7 @@ Output el texto completo corregido, sin comillas.`;
           model: options?.model || 'gpt-4o-mini',
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: text }
+            { role: 'user', content: sanitizedText }
           ]
         };
 
@@ -895,6 +925,13 @@ Output el texto completo corregido, sin comillas.`;
 
   // Paste text (preserves original clipboard content)
   ipcMain.handle('paste-text', async (event, text) => {
+    // Validate input
+    const validation = validateIpcMessage('paste-text', text);
+    if (!validation.isValid) {
+      logError('Paste-text validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     log('Pasting text - length:', text?.length || 0, 'words:', text?.split(/\s+/).length || 0);
     try {
       // Save current clipboard content to restore later
@@ -996,6 +1033,13 @@ Output el texto completo corregido, sin comillas.`;
   });
 
   ipcMain.handle('save-transcription', (event, data) => {
+    // Validate input
+    const validation = validateIpcMessage('save-transcription', data);
+    if (!validation.isValid) {
+      logError('Save-transcription validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     log('Saving transcription - words:', data?.original_text?.split(/\s+/).length || 0, 'processed:', !!data?.processed_text);
     if (!db) return { success: false, error: 'Database not initialized' };
     try {
@@ -1049,6 +1093,13 @@ Output el texto completo corregido, sin comillas.`;
 
   // Save API key securely
   ipcMain.handle('set-api-key', (event, provider, key) => {
+    // Validate input
+    const validation = validateIpcMessage('set-api-key', provider, key);
+    if (!validation.isValid) {
+      logError('Set-api-key validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     log('Setting API key for:', provider);
     if (!secureStorage) {
       logError('Secure storage not initialized');
@@ -1120,11 +1171,18 @@ Output el texto completo corregido, sin comillas.`;
 
   // Read log file content
   ipcMain.handle('read-log-file', (event, filename) => {
+    // Validate input - prevents path traversal attacks
+    const validation = validateIpcMessage('read-log-file', filename);
+    if (!validation.isValid) {
+      logError('Read-log-file validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     try {
       const logsDir = path.join(app.getPath('userData'), 'logs');
       const filePath = path.join(logsDir, filename);
 
-      // Security check: ensure file is within logs directory
+      // Double-check: ensure file is within logs directory (defense in depth)
       if (!filePath.startsWith(logsDir)) {
         throw new Error('Invalid file path');
       }
@@ -1200,6 +1258,13 @@ Output el texto completo corregido, sin comillas.`;
 
   // Clear old logs (keep last N days)
   ipcMain.handle('clear-old-logs', (event, keepDays = 30) => {
+    // Validate input
+    const validation = validateIpcMessage('clear-old-logs', keepDays);
+    if (!validation.isValid) {
+      logError('Clear-old-logs validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
     try {
       const logsDir = path.join(app.getPath('userData'), 'logs');
       if (!fs.existsSync(logsDir)) return { success: true, deleted: 0 };
@@ -1253,12 +1318,14 @@ Output el texto completo corregido, sin comillas.`;
   });
 
   ipcMain.handle('set-hotkey', (event, newHotkey) => {
-    log('Setting new hotkey:', newHotkey);
-
-    // Validate hotkey format (basic validation)
-    if (!newHotkey || typeof newHotkey !== 'string') {
-      return { success: false, error: 'Hotkey inválido' };
+    // Validate input using validation module
+    const validation = validateIpcMessage('set-hotkey', newHotkey);
+    if (!validation.isValid) {
+      logError('Set-hotkey validation failed:', validation.error);
+      return { success: false, error: validation.error };
     }
+
+    log('Setting new hotkey:', newHotkey);
 
     // Try to register the new hotkey
     const result = registerHotkey(newHotkey);
