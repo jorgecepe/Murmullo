@@ -32,13 +32,32 @@ function App() {
   // Play completion sound
   const playCompletionSound = useCallback(() => {
     try {
-      // Base64-encoded short success beep (WAV format, ~100ms beep at 880Hz)
-      const successBeep = 'data:audio/wav;base64,UklGRl4AAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YToAAAAA//8BAP7/AgD9/wMA/P8EAPv/BQD6/wYA+f8HAPj/CAD3/wkA9v8KAPX/CwD0/wwA8/8NAPL/DgDx/w8A8P8QAPP/DwD2/w4A+f8NAP3/CgD//wgAAQAGAAQABAAHAAEACv/+//3/';
-      const audio = new Audio(successBeep);
-      audio.volume = 0.3;
-      audio.play().catch(() => {}); // Ignore if autoplay blocked
+      // Use Web Audio API to generate a pleasant completion chime
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+
+      // Pleasant two-tone chime (C5 then E5)
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime); // C5
+      oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime + 0.1); // E5
+
+      // Fade in and out
+      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.4, audioContext.currentTime + 0.05);
+      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1);
+      gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.25);
+
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.25);
+
+      // Cleanup
+      oscillator.onended = () => audioContext.close();
     } catch (e) {
-      // Silently fail if audio doesn't work
+      console.log('[App] Could not play completion sound:', e);
     }
   }, []);
 
@@ -414,7 +433,12 @@ function App() {
       setLastText(finalText);
       setProcessingStage('');
       setStatus(STATUS.SUCCESS);
-      playCompletionSound();
+
+      // Play completion sound if enabled
+      const soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+      if (soundEnabled) {
+        playCompletionSound();
+      }
       console.log('[App] Success!');
 
       // Reset to idle after 2 seconds
@@ -440,28 +464,6 @@ function App() {
   // No click needed - only responds to hotkey (Ctrl+Shift+Space)
   return (
     <div className="w-[60px] h-[60px] flex flex-col items-center justify-center bg-transparent relative">
-      {/* Toast notification - appears above the indicator */}
-      {toast && (
-        <div
-          className={`
-            absolute -top-16 left-1/2 -translate-x-1/2 whitespace-nowrap
-            px-3 py-2 rounded-lg shadow-lg text-xs font-medium
-            animate-fade-in z-50 max-w-[200px] text-center
-            ${toast.type === 'error' ? 'bg-red-600 text-white' : ''}
-            ${toast.type === 'success' ? 'bg-green-600 text-white' : ''}
-            ${toast.type === 'info' ? 'bg-blue-600 text-white' : ''}
-          `}
-        >
-          {toast.message}
-        </div>
-      )}
-
-      {/* Processing stage indicator - shows what step we're on */}
-      {status === STATUS.PROCESSING && processingStage && (
-        <div className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800/95 text-white px-2 py-1 rounded text-[10px] font-medium shadow-lg">
-          {processingStage}
-        </div>
-      )}
 
       {/* Minimal status indicator */}
       <div

@@ -79,7 +79,8 @@ function ControlPanel() {
     language: 'es',
     processingMode: 'smart',
     reasoningProvider: 'anthropic',
-    reasoningModel: 'claude-3-haiku-20240307'
+    reasoningModel: 'claude-3-haiku-20240307',
+    soundEnabled: true  // Completion sound enabled by default
   });
   const [apiKeys, setApiKeys] = useState({
     openai: '',
@@ -129,7 +130,8 @@ function ControlPanel() {
       language: localStorage.getItem('language') || 'es',
       processingMode: localStorage.getItem('processingMode') || 'smart',
       reasoningProvider: localStorage.getItem('reasoningProvider') || 'anthropic',
-      reasoningModel: localStorage.getItem('reasoningModel') || 'claude-3-haiku-20240307'
+      reasoningModel: localStorage.getItem('reasoningModel') || 'claude-3-haiku-20240307',
+      soundEnabled: localStorage.getItem('soundEnabled') !== 'false' // Default true
     };
     setSettings(loadedSettings);
 
@@ -702,6 +704,30 @@ function ControlPanel() {
                   </>
                 )}
               </select>
+            </div>
+
+            {/* Sound toggle */}
+            <div className="p-4 bg-slate-700/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-medium text-white">Sonido de completado</h3>
+                  <p className="text-sm text-slate-400">
+                    Reproduce un sonido al terminar una transcripción
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSettingChange('soundEnabled', !settings.soundEnabled)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    settings.soundEnabled ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      settings.soundEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
           </div>
         );
