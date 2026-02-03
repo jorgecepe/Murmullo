@@ -39,6 +39,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
 
+  // Hotkey management
+  getHotkey: () => ipcRenderer.invoke('get-hotkey'),
+  setHotkey: (hotkey) => ipcRenderer.invoke('set-hotkey', hotkey),
+  getAvailableHotkeys: () => ipcRenderer.invoke('get-available-hotkeys'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

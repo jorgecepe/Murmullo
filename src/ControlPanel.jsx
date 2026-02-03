@@ -38,7 +38,11 @@ function ControlPanel() {
   const [logFiles, setLogFiles] = useState([]);
   const [selectedLogContent, setSelectedLogContent] = useState(null);
   const [loadingLogs, setLoadingLogs] = useState(false);
-  const [appInfo, setAppInfo] = useState({ version: '...' });
+  const [appInfo, setAppInfo] = useState({ version: '...', hotkey: 'CommandOrControl+Shift+Space' });
+  const [currentHotkey, setCurrentHotkey] = useState('CommandOrControl+Shift+Space');
+  const [availableHotkeys, setAvailableHotkeys] = useState([]);
+  const [customHotkey, setCustomHotkey] = useState('');
+  const [hotkeyStatus, setHotkeyStatus] = useState({ message: '', type: '' });
 
   // Load settings on mount
   useEffect(() => {
@@ -64,6 +68,25 @@ function ControlPanel() {
     if (window.electronAPI?.getAppInfo) {
       window.electronAPI.getAppInfo().then(info => {
         setAppInfo(info);
+        if (info.hotkey) {
+          setCurrentHotkey(info.hotkey);
+        }
+      });
+    }
+
+    // Load available hotkeys
+    if (window.electronAPI?.getAvailableHotkeys) {
+      window.electronAPI.getAvailableHotkeys().then(hotkeys => {
+        setAvailableHotkeys(hotkeys);
+      });
+    }
+
+    // Load current hotkey
+    if (window.electronAPI?.getHotkey) {
+      window.electronAPI.getHotkey().then(hotkey => {
+        if (hotkey) {
+          setCurrentHotkey(hotkey);
+        }
       });
     }
   }, []);
@@ -259,6 +282,39 @@ function ControlPanel() {
     window.electronAPI?.hideControlPanel();
   };
 
+  // Change hotkey function
+  const changeHotkey = async (newHotkey) => {
+    if (!window.electronAPI?.setHotkey) {
+      setHotkeyStatus({ message: 'API no disponible', type: 'error' });
+      return;
+    }
+
+    setHotkeyStatus({ message: 'Cambiando...', type: 'info' });
+
+    try {
+      const result = await window.electronAPI.setHotkey(newHotkey);
+      if (result.success) {
+        setCurrentHotkey(newHotkey);
+        setHotkeyStatus({ message: '¡Hotkey cambiado exitosamente!', type: 'success' });
+        setTimeout(() => setHotkeyStatus({ message: '', type: '' }), 3000);
+      } else {
+        setHotkeyStatus({ message: result.error || 'Error al cambiar hotkey', type: 'error' });
+      }
+    } catch (err) {
+      setHotkeyStatus({ message: 'Error: ' + err.message, type: 'error' });
+    }
+  };
+
+  // Format hotkey for display (make it more readable)
+  const formatHotkeyDisplay = (hotkey) => {
+    if (!hotkey) return '';
+    return hotkey
+      .replace('CommandOrControl', 'Ctrl')
+      .replace('Control', 'Ctrl')
+      .replace('Command', 'Cmd')
+      .replace(/\+/g, ' + ');
+  };
+
   const formatDate = (timestamp) => {
     return new Date(timestamp).toLocaleString('es-ES', {
       day: '2-digit',
@@ -399,22 +455,88 @@ function ControlPanel() {
               <label className="block text-sm font-medium text-slate-300 mb-2">
                 Hotkey actual
               </label>
-              <div className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono">
-                Ctrl + Shift + Space
+              <div className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white font-mono text-lg">
+                {formatHotkeyDisplay(currentHotkey)}
               </div>
               <p className="mt-2 text-xs text-slate-400">
                 Presiona este atajo de teclado para iniciar/detener la grabación desde cualquier aplicación.
               </p>
             </div>
 
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                Cambiar hotkey
+              </label>
+              <select
+                value={currentHotkey}
+                onChange={(e) => changeHotkey(e.target.value)}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {availableHotkeys.map((hk) => (
+                  <option key={hk} value={hk}>
+                    {formatHotkeyDisplay(hk)}
+                  </option>
+                ))}
+              </select>
+
+              {/* Status message */}
+              {hotkeyStatus.message && (
+                <p className={`mt-2 text-sm ${
+                  hotkeyStatus.type === 'success' ? 'text-green-400' :
+                  hotkeyStatus.type === 'error' ? 'text-red-400' :
+                  'text-blue-400'
+                }`}>
+                  {hotkeyStatus.message}
+                </p>
+              )}
+            </div>
+
+            {/* Custom hotkey input */}
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
+                O ingresa un hotkey personalizado
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={customHotkey}
+                  onChange={(e) => setCustomHotkey(e.target.value)}
+                  placeholder="Ej: CommandOrControl+Alt+D"
+                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                />
+                <button
+                  onClick={() => {
+                    if (customHotkey.trim()) {
+                      changeHotkey(customHotkey.trim());
+                    }
+                  }}
+                  disabled={!customHotkey.trim()}
+                  className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Aplicar
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Formato: CommandOrControl, Control, Alt, Shift + letras/números/F1-F12
+              </p>
+            </div>
+
             <div className="p-4 bg-slate-700/50 rounded-lg">
               <h4 className="text-sm font-medium text-slate-300 mb-2">Cómo usar</h4>
               <ol className="text-xs text-slate-400 space-y-2">
-                <li>1. Presiona <kbd className="bg-slate-600 px-1 rounded">Ctrl+Shift+Space</kbd> para empezar a grabar</li>
+                <li>1. Presiona <kbd className="bg-slate-600 px-1 rounded">{formatHotkeyDisplay(currentHotkey)}</kbd> para empezar a grabar</li>
                 <li>2. Habla tu texto claramente</li>
-                <li>3. Presiona <kbd className="bg-slate-600 px-1 rounded">Ctrl+Shift+Space</kbd> de nuevo para detener</li>
+                <li>3. Presiona <kbd className="bg-slate-600 px-1 rounded">{formatHotkeyDisplay(currentHotkey)}</kbd> de nuevo para detener</li>
                 <li>4. El texto se pegará automáticamente en la aplicación activa</li>
               </ol>
+            </div>
+
+            <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              <h4 className="text-sm font-medium text-amber-400 mb-2">⚠️ Nota importante</h4>
+              <p className="text-xs text-slate-400">
+                Algunos atajos pueden estar ocupados por otras aplicaciones o el sistema operativo.
+                Si el hotkey no funciona, prueba con otra combinación.
+              </p>
             </div>
           </div>
         );

@@ -147,6 +147,7 @@ let controlPanel = null;
 let tray = null;
 let db = null;
 let dbPath = null;
+let currentHotkey = 'CommandOrControl+Shift+Space'; // Default hotkey, can be changed by user
 
 const isDev = !app.isPackaged;
 const VITE_DEV_SERVER_URL = 'http://localhost:5174';
@@ -348,6 +349,19 @@ function createTray() {
       }
     }},
     { type: 'separator' },
+    { label: 'Acerca de Murmullo...', click: () => {
+      const appVersion = app.getVersion();
+      const info = `Murmullo v${appVersion}\n\nDictado de voz para desarrolladores hispanohablantes.\n\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nChrome: ${process.versions.chrome}\nPlataforma: ${process.platform} (${process.arch})\n\nHotkey: ${currentHotkey || 'Ctrl+Shift+Space'}`;
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Acerca de Murmullo',
+        message: `Murmullo v${appVersion}`,
+        detail: `Dictado de voz para desarrolladores hispanohablantes.\n\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nChrome: ${process.versions.chrome}\nPlataforma: ${process.platform} (${process.arch})\n\nHotkey actual: ${currentHotkey || 'Ctrl+Shift+Space'}`,
+        buttons: ['OK']
+      });
+      logAction('ABOUT_DIALOG_SHOWN');
+    }},
+    { type: 'separator' },
     { label: 'Salir', click: () => {
       app.isQuitting = true;
       app.quit();
@@ -379,8 +393,20 @@ function createTray() {
   log('Tray created');
 }
 
-function registerHotkey() {
-  const hotkey = 'CommandOrControl+Shift+Space';
+function registerHotkey(newHotkey = null) {
+  // Unregister previous hotkey if exists
+  if (currentHotkey) {
+    try {
+      globalShortcut.unregister(currentHotkey);
+      log('Unregistered previous hotkey:', currentHotkey);
+    } catch (e) {
+      // Ignore if not registered
+    }
+  }
+
+  // Use new hotkey or default
+  const hotkey = newHotkey || currentHotkey || 'CommandOrControl+Shift+Space';
+  currentHotkey = hotkey;
 
   const registered = globalShortcut.register(hotkey, () => {
     log('Hotkey pressed!');
@@ -393,8 +419,11 @@ function registerHotkey() {
 
   if (registered) {
     console.log('Hotkey registered:', hotkey);
+    log('Hotkey registered successfully:', hotkey);
+    return { success: true, hotkey };
   } else {
     logError('Failed to register hotkey:', hotkey);
+    return { success: false, error: `No se pudo registrar el hotkey: ${hotkey}` };
   }
 }
 
@@ -1115,8 +1144,59 @@ Output el texto completo corregido, sin comillas.`;
       node: process.versions.node,
       chrome: process.versions.chrome,
       platform: process.platform,
-      arch: process.arch
+      arch: process.arch,
+      hotkey: currentHotkey
     };
+  });
+
+  // Hotkey management
+  ipcMain.handle('get-hotkey', () => {
+    return currentHotkey;
+  });
+
+  ipcMain.handle('set-hotkey', (event, newHotkey) => {
+    log('Setting new hotkey:', newHotkey);
+
+    // Validate hotkey format (basic validation)
+    if (!newHotkey || typeof newHotkey !== 'string') {
+      return { success: false, error: 'Hotkey inválido' };
+    }
+
+    // Try to register the new hotkey
+    const result = registerHotkey(newHotkey);
+
+    if (result.success) {
+      // Save to config file
+      try {
+        const configPath = path.join(app.getPath('userData'), 'config.json');
+        let config = {};
+        if (fs.existsSync(configPath)) {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        }
+        config.hotkey = newHotkey;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        log('Hotkey saved to config:', newHotkey);
+        logAction('HOTKEY_CHANGED', { hotkey: newHotkey });
+      } catch (err) {
+        logError('Failed to save hotkey config:', err);
+      }
+    }
+
+    return result;
+  });
+
+  ipcMain.handle('get-available-hotkeys', () => {
+    // Return some common hotkey suggestions
+    return [
+      'CommandOrControl+Shift+Space',
+      'CommandOrControl+Shift+D',
+      'CommandOrControl+Shift+M',
+      'CommandOrControl+Alt+Space',
+      'Alt+Space',
+      'F9',
+      'F10',
+      'CommandOrControl+`'
+    ];
   });
 
   log('IPC handlers set up');
@@ -1157,11 +1237,25 @@ app.whenReady().then(async () => {
     log('OPENAI_API_KEY loaded:', !!process.env.OPENAI_API_KEY);
     log('ANTHROPIC_API_KEY loaded:', !!process.env.ANTHROPIC_API_KEY);
 
+    // Load saved hotkey from config
+    try {
+      const configPath = path.join(app.getPath('userData'), 'config.json');
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (config.hotkey) {
+          currentHotkey = config.hotkey;
+          log('Loaded saved hotkey:', currentHotkey);
+        }
+      }
+    } catch (err) {
+      log('No saved config found, using default hotkey');
+    }
+
     await initDatabase();
     createMainWindow();
     createControlPanel();
     createTray();
-    registerHotkey();
+    registerHotkey(currentHotkey);
     setupIpcHandlers();
 
     log('Initialization complete');
