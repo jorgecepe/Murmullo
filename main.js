@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session, net } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
@@ -250,14 +250,16 @@ async function warmupBackend() {
     return;
   }
 
-  log('Sending warmup ping to backend...');
+  // Normalize URL: remove trailing slashes
+  const normalizedUrl = backendUrl.replace(/\/+$/, '');
+  const healthUrl = `${normalizedUrl}/health`;
+
+  log('Sending warmup ping to backend:', healthUrl);
   try {
-    const healthUrl = `${backendUrl}/health`;
     const startTime = Date.now();
 
-    const response = await fetch(healthUrl, {
-      method: 'GET',
-      timeout: 30000 // 30 second timeout for cold starts
+    const response = await electronFetch(healthUrl, {
+      method: 'GET'
     });
 
     const latency = Date.now() - startTime;
@@ -268,7 +270,11 @@ async function warmupBackend() {
       log(`Backend warmup returned status ${response.status} (${latency}ms)`);
     }
   } catch (err) {
-    log('Backend warmup failed (server may be starting):', err.message);
+    log('Backend warmup failed (server may be starting):', {
+      message: err.message,
+      code: err.code,
+      cause: err.cause?.message || err.cause
+    });
     // Don't throw - this is just a warmup, not critical
   }
 }
@@ -292,12 +298,22 @@ function saveBackendSettings() {
   }
 }
 
+// Use Electron's net.fetch which respects system proxy settings
+// Falls back to Node's fetch if net is not available (shouldn't happen after app.ready)
+function electronFetch(url, options = {}) {
+  if (net && typeof net.fetch === 'function') {
+    return net.fetch(url, options);
+  }
+  log('WARNING: net.fetch not available, using Node fetch (proxy may not work)');
+  return fetch(url, options);
+}
+
 // Fetch with automatic retry for network errors
 async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   let lastError;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await fetch(url, options);
+      const response = await electronFetch(url, options);
       // Don't retry for client errors (4xx), only for server errors (5xx) or network issues
       if (response.ok || (response.status >= 400 && response.status < 500)) {
         return response;
@@ -335,7 +351,7 @@ async function backendRequest(endpoint, options = {}) {
   }
 
   try {
-    const response = await fetch(url, {
+    const response = await electronFetch(url, {
       ...options,
       headers
     });
@@ -346,7 +362,7 @@ async function backendRequest(endpoint, options = {}) {
       if (refreshed) {
         // Retry with new token
         headers['Authorization'] = `Bearer ${backendAccessToken}`;
-        const retryResponse = await fetch(url, { ...options, headers });
+        const retryResponse = await electronFetch(url, { ...options, headers });
         return handleBackendResponse(retryResponse);
       }
     }
@@ -375,7 +391,7 @@ async function handleBackendResponse(response) {
 // Refresh backend access token
 async function refreshBackendToken() {
   try {
-    const response = await fetch(`${backendUrl}/api/v1/auth/refresh`, {
+    const response = await electronFetch(`${backendUrl}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: backendRefreshToken })
@@ -1798,8 +1814,10 @@ Output el texto completo corregido, sin comillas.`;
   // Set backend URL
   ipcMain.handle('set-backend-url', (event, url) => {
     log('=== SET BACKEND URL ===');
-    log('URL:', url);
-    backendUrl = url;
+    log('URL (raw):', url);
+    // Normalize URL: remove trailing slashes
+    backendUrl = url.replace(/\/+$/, '');
+    log('URL (normalized):', backendUrl);
     saveBackendSettings();
     log('Backend URL saved');
     return { success: true, backendUrl };
@@ -1807,12 +1825,15 @@ Output el texto completo corregido, sin comillas.`;
 
   // Check backend health
   ipcMain.handle('check-backend-health', async () => {
-    log('Checking backend health at:', backendUrl);
+    // Normalize URL before use
+    const normalizedUrl = backendUrl.replace(/\/+$/, '');
+    const healthUrl = `${normalizedUrl}/health`;
+    log('Checking backend health at:', healthUrl);
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-      const response = await fetch(`${backendUrl}/health`, {
+      const response = await electronFetch(healthUrl, {
         signal: controller.signal
       });
 
@@ -1820,8 +1841,15 @@ Output el texto completo corregido, sin comillas.`;
       log('Backend health response:', response.ok, response.status);
       return { online: response.ok };
     } catch (error) {
-      logError('Backend health check failed:', error.message);
-      return { online: false };
+      // Log detailed error info for debugging corporate network issues
+      logError('Backend health check failed:', {
+        message: error.message,
+        code: error.code,
+        cause: error.cause?.message || error.cause,
+        type: error.name,
+        url: healthUrl
+      });
+      return { online: false, error: error.message };
     }
   });
 
@@ -1829,7 +1857,7 @@ Output el texto completo corregido, sin comillas.`;
   ipcMain.handle('backend-login', async (event, email, password) => {
     log('Backend login attempt for:', email);
     try {
-      const response = await fetch(`${backendUrl}/api/v1/auth/login`, {
+      const response = await electronFetch(`${backendUrl}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -1857,7 +1885,7 @@ Output el texto completo corregido, sin comillas.`;
   ipcMain.handle('backend-register', async (event, email, password, name) => {
     log('Backend register attempt for:', email);
     try {
-      const response = await fetch(`${backendUrl}/api/v1/auth/register`, {
+      const response = await electronFetch(`${backendUrl}/api/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, name })
@@ -1886,7 +1914,7 @@ Output el texto completo corregido, sin comillas.`;
     log('Backend logout');
     try {
       if (backendAccessToken && backendRefreshToken) {
-        await fetch(`${backendUrl}/api/v1/auth/logout`, {
+        await electronFetch(`${backendUrl}/api/v1/auth/logout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2005,6 +2033,14 @@ app.whenReady().then(async () => {
     // Initialize logging first
     initLogging();
     logInfo('App ready, starting initialization...');
+
+    // Configure session to use system proxy (for corporate networks)
+    try {
+      await session.defaultSession.setProxy({ mode: 'system' });
+      log('Proxy configured to use system settings');
+    } catch (proxyErr) {
+      logError('Failed to configure system proxy:', proxyErr.message);
+    }
 
     // Initialize secure storage for API keys
     const secureStoragePath = path.join(app.getPath('userData'), 'secure-keys.json');
