@@ -144,6 +144,55 @@ function isValidFilename(value) {
 }
 
 /**
+ * Validate dictionary entry
+ */
+function isValidDictionaryEntry(entry) {
+  if (!isObject(entry)) return false;
+  if (!isNonEmptyString(entry.find)) return false;
+  if (!isNonEmptyString(entry.replace)) return false;
+  if (entry.find.length > 100) return false;
+  if (entry.replace.length > 200) return false;
+  if (entry.soundsLike !== undefined && !isString(entry.soundsLike)) return false;
+  if (entry.caseSensitive !== undefined && !isBoolean(entry.caseSensitive)) return false;
+  if (entry.enabled !== undefined && !isBoolean(entry.enabled)) return false;
+  return true;
+}
+
+/**
+ * Validate dictionary structure
+ */
+function isValidDictionary(dict) {
+  if (!isObject(dict)) return false;
+  if (dict.entries !== undefined && !isArray(dict.entries)) return false;
+  if (dict.settings !== undefined && !isObject(dict.settings)) return false;
+  return true;
+}
+
+/**
+ * Validate dictionary entry updates
+ */
+function isValidDictionaryEntryUpdates(updates) {
+  if (!isObject(updates)) return false;
+  if (updates.find !== undefined && !isString(updates.find)) return false;
+  if (updates.replace !== undefined && !isString(updates.replace)) return false;
+  if (updates.soundsLike !== undefined && !isString(updates.soundsLike)) return false;
+  if (updates.caseSensitive !== undefined && !isBoolean(updates.caseSensitive)) return false;
+  if (updates.enabled !== undefined && !isBoolean(updates.enabled)) return false;
+  return true;
+}
+
+/**
+ * Validate dictionary settings
+ */
+function isValidDictionarySettings(settings) {
+  if (!isObject(settings)) return false;
+  if (settings.maxWhisperPromptWords !== undefined && !isPositiveInt(settings.maxWhisperPromptWords)) return false;
+  if (settings.enablePostProcessing !== undefined && !isBoolean(settings.enablePostProcessing)) return false;
+  if (settings.enableWhisperHints !== undefined && !isBoolean(settings.enableWhisperHints)) return false;
+  return true;
+}
+
+/**
  * Sanitize string input (remove potentially dangerous characters)
  */
 function sanitizeString(value, maxLength = 10000) {
@@ -258,6 +307,75 @@ function validateIpcMessage(channel, ...args) {
       return validationResult(true);
     }
 
+    // Dictionary handlers
+    case 'set-dictionary': {
+      const [dict] = args;
+      if (!isValidDictionary(dict)) {
+        return validationResult(false, 'Invalid dictionary format');
+      }
+      return validationResult(true);
+    }
+
+    case 'add-dictionary-entry': {
+      const [entry] = args;
+      if (!isValidDictionaryEntry(entry)) {
+        return validationResult(false, 'Invalid dictionary entry');
+      }
+      return validationResult(true);
+    }
+
+    case 'update-dictionary-entry': {
+      const [id, updates] = args;
+      if (!isNonEmptyString(id)) {
+        return validationResult(false, 'Invalid entry ID');
+      }
+      if (!isValidDictionaryEntryUpdates(updates)) {
+        return validationResult(false, 'Invalid entry updates');
+      }
+      return validationResult(true);
+    }
+
+    case 'delete-dictionary-entry': {
+      const [id] = args;
+      if (!isNonEmptyString(id)) {
+        return validationResult(false, 'Invalid entry ID');
+      }
+      return validationResult(true);
+    }
+
+    case 'import-dictionary': {
+      const [json] = args;
+      // Allow string (JSON) or object
+      if (!isString(json) && !isObject(json)) {
+        return validationResult(false, 'Invalid import data');
+      }
+      return validationResult(true);
+    }
+
+    case 'test-replacement': {
+      const [text] = args;
+      if (!isString(text)) {
+        return validationResult(false, 'Invalid text');
+      }
+      if (text.length > 10000) {
+        return validationResult(false, 'Text too long');
+      }
+      return validationResult(true);
+    }
+
+    case 'update-dictionary-settings': {
+      const [settings] = args;
+      if (!isValidDictionarySettings(settings)) {
+        return validationResult(false, 'Invalid dictionary settings');
+      }
+      return validationResult(true);
+    }
+
+    // Dictionary handlers that take no arguments
+    case 'get-dictionary':
+    case 'export-dictionary':
+      return validationResult(true);
+
     // Handlers that take no arguments or only need basic validation
     case 'get-api-keys':
     case 'check-encryption':
@@ -296,6 +414,10 @@ module.exports = {
   isValidLanguage,
   isValidTranscriptionData,
   isValidFilename,
+  isValidDictionaryEntry,
+  isValidDictionary,
+  isValidDictionaryEntryUpdates,
+  isValidDictionarySettings,
   sanitizeString,
   validateIpcMessage
 };

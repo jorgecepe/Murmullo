@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Component } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle, BookText, Plus, Edit3, Play, Upload } from 'lucide-react';
 
 // Error Boundary to catch rendering errors
 class ErrorBoundary extends Component {
@@ -53,6 +53,7 @@ class ErrorBoundary extends Component {
 
 const TABS = {
   GENERAL: 'general',
+  DICTIONARY: 'dictionary',
   ACCOUNT: 'account',
   API_KEYS: 'api-keys',
   HOTKEY: 'hotkey',
@@ -132,6 +133,22 @@ function ControlPanel() {
     totalSizeKB: 0
   });
 
+  // Custom dictionary state
+  const [dictionary, setDictionary] = useState({
+    version: 1,
+    entries: [],
+    settings: {
+      maxWhisperPromptWords: 40,
+      enablePostProcessing: true,
+      enableWhisperHints: true
+    }
+  });
+  const [newEntry, setNewEntry] = useState({ find: '', replace: '', soundsLike: '' });
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [testText, setTestText] = useState('');
+  const [testResult, setTestResult] = useState(null);
+  const [dictionaryLoading, setDictionaryLoading] = useState(false);
+
   // Load debug audio settings
   const loadDebugAudioSettings = async () => {
     if (window.electronAPI?.getDebugAudioSettings) {
@@ -140,6 +157,20 @@ function ControlPanel() {
         setDebugAudioSettings(settings);
       } catch (err) {
         console.error('Failed to load debug audio settings:', err);
+      }
+    }
+  };
+
+  // Load custom dictionary
+  const loadDictionary = async () => {
+    if (window.electronAPI?.getDictionary) {
+      try {
+        const dict = await window.electronAPI.getDictionary();
+        if (dict) {
+          setDictionary(dict);
+        }
+      } catch (err) {
+        console.error('Failed to load dictionary:', err);
       }
     }
   };
@@ -235,6 +266,9 @@ function ControlPanel() {
 
     // Load debug audio settings
     loadDebugAudioSettings();
+
+    // Load custom dictionary
+    loadDictionary();
 
     // Listen for update status changes
     let unsubscribeUpdate;
@@ -817,6 +851,376 @@ function ControlPanel() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        );
+
+      case TABS.DICTIONARY:
+        return (
+          <div className="space-y-6">
+            {/* Header with import/export */}
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-medium text-white">Diccionario personalizado</h3>
+                <p className="text-sm text-slate-400 mt-1">
+                  Agrega palabras que Whisper transcribe incorrectamente. Ejemplo: "cojade" → "COHADE"
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (window.electronAPI?.exportDictionary) {
+                      const result = await window.electronAPI.exportDictionary();
+                      if (result.success) {
+                        const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `murmullo-dictionary-${new Date().toISOString().split('T')[0]}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }
+                    }
+                  }}
+                  className="flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-white transition-colors"
+                >
+                  <Download size={16} />
+                  Exportar
+                </button>
+                <label className="flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm text-white transition-colors cursor-pointer">
+                  <Upload size={16} />
+                  Importar
+                  <input
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (file && window.electronAPI?.importDictionary) {
+                        const reader = new FileReader();
+                        reader.onload = async (event) => {
+                          try {
+                            const result = await window.electronAPI.importDictionary(event.target.result);
+                            if (result.success) {
+                              alert(`Importado: ${result.addedCount} entradas nuevas (total: ${result.totalEntries})`);
+                              loadDictionary();
+                            } else {
+                              alert('Error al importar: ' + result.error);
+                            }
+                          } catch (err) {
+                            alert('Error al importar: ' + err.message);
+                          }
+                        };
+                        reader.readAsText(file);
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Add new entry form */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <Plus size={16} className="text-blue-400" />
+                Agregar nueva entrada
+              </h4>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Buscar (error)</label>
+                  <input
+                    type="text"
+                    placeholder="ej: cojade"
+                    value={newEntry.find}
+                    onChange={(e) => setNewEntry(prev => ({ ...prev, find: e.target.value }))}
+                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Reemplazar (correcto)</label>
+                  <input
+                    type="text"
+                    placeholder="ej: COHADE"
+                    value={newEntry.replace}
+                    onChange={(e) => setNewEntry(prev => ({ ...prev, replace: e.target.value }))}
+                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Suena como (opcional)</label>
+                  <input
+                    type="text"
+                    placeholder="ej: co-a-de"
+                    value={newEntry.soundsLike}
+                    onChange={(e) => setNewEntry(prev => ({ ...prev, soundsLike: e.target.value }))}
+                    className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  if (!newEntry.find.trim() || !newEntry.replace.trim()) {
+                    alert('Los campos "Buscar" y "Reemplazar" son obligatorios');
+                    return;
+                  }
+                  if (window.electronAPI?.addDictionaryEntry) {
+                    const result = await window.electronAPI.addDictionaryEntry(newEntry);
+                    if (result.success) {
+                      setNewEntry({ find: '', replace: '', soundsLike: '' });
+                      loadDictionary();
+                    } else {
+                      alert('Error: ' + result.error);
+                    }
+                  }
+                }}
+                disabled={!newEntry.find.trim() || !newEntry.replace.trim()}
+                className="mt-3 flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg text-sm text-white transition-colors"
+              >
+                <Plus size={16} />
+                Agregar entrada
+              </button>
+            </div>
+
+            {/* Entries table */}
+            <div className="bg-slate-800/50 rounded-xl overflow-hidden">
+              <div className="p-4 border-b border-slate-700">
+                <h4 className="text-sm font-medium text-slate-300 flex items-center gap-2">
+                  <BookText size={16} className="text-blue-400" />
+                  Entradas del diccionario ({dictionary.entries.length})
+                </h4>
+              </div>
+              {dictionary.entries.length === 0 ? (
+                <div className="p-8 text-center text-slate-500">
+                  <BookText size={48} className="mx-auto mb-4 opacity-50" />
+                  <p>No hay entradas en el diccionario</p>
+                  <p className="text-sm mt-1">Agrega palabras que Whisper transcribe mal</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-slate-700/50">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Activo</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Buscar</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Reemplazar</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Suena como</th>
+                        <th className="px-4 py-2 text-right text-xs font-medium text-slate-400">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-700">
+                      {dictionary.entries.map((entry) => (
+                        <tr key={entry.id} className={`hover:bg-slate-700/30 ${!entry.enabled ? 'opacity-50' : ''}`}>
+                          <td className="px-4 py-3">
+                            <button
+                              onClick={async () => {
+                                if (window.electronAPI?.updateDictionaryEntry) {
+                                  await window.electronAPI.updateDictionaryEntry(entry.id, { enabled: !entry.enabled });
+                                  loadDictionary();
+                                }
+                              }}
+                              className={`w-5 h-5 rounded border ${entry.enabled ? 'bg-blue-600 border-blue-600' : 'bg-transparent border-slate-500'} flex items-center justify-center`}
+                            >
+                              {entry.enabled && <CheckCircle2 size={14} className="text-white" />}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3">
+                            {editingEntry?.id === entry.id ? (
+                              <input
+                                type="text"
+                                value={editingEntry.find}
+                                onChange={(e) => setEditingEntry(prev => ({ ...prev, find: e.target.value }))}
+                                className="w-full bg-slate-700 border border-slate-500 rounded px-2 py-1 text-white text-sm"
+                              />
+                            ) : (
+                              <span className="text-white font-mono text-sm">{entry.find}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            {editingEntry?.id === entry.id ? (
+                              <input
+                                type="text"
+                                value={editingEntry.replace}
+                                onChange={(e) => setEditingEntry(prev => ({ ...prev, replace: e.target.value }))}
+                                className="w-full bg-slate-700 border border-slate-500 rounded px-2 py-1 text-white text-sm"
+                              />
+                            ) : (
+                              <span className="text-green-400 font-mono text-sm">{entry.replace}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-400 text-sm">
+                            {editingEntry?.id === entry.id ? (
+                              <input
+                                type="text"
+                                value={editingEntry.soundsLike || ''}
+                                onChange={(e) => setEditingEntry(prev => ({ ...prev, soundsLike: e.target.value }))}
+                                className="w-full bg-slate-700 border border-slate-500 rounded px-2 py-1 text-white text-sm"
+                              />
+                            ) : (
+                              entry.soundsLike || '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            {editingEntry?.id === entry.id ? (
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={async () => {
+                                    if (window.electronAPI?.updateDictionaryEntry) {
+                                      await window.electronAPI.updateDictionaryEntry(entry.id, {
+                                        find: editingEntry.find,
+                                        replace: editingEntry.replace,
+                                        soundsLike: editingEntry.soundsLike
+                                      });
+                                      setEditingEntry(null);
+                                      loadDictionary();
+                                    }
+                                  }}
+                                  className="px-2 py-1 bg-green-600 hover:bg-green-700 rounded text-xs text-white"
+                                >
+                                  Guardar
+                                </button>
+                                <button
+                                  onClick={() => setEditingEntry(null)}
+                                  className="px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded text-xs text-white"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() => setEditingEntry({ ...entry })}
+                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700 rounded transition-colors"
+                                  title="Editar"
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`¿Eliminar entrada "${entry.find}" → "${entry.replace}"?`)) {
+                                      if (window.electronAPI?.deleteDictionaryEntry) {
+                                        await window.electronAPI.deleteDictionaryEntry(entry.id);
+                                        loadDictionary();
+                                      }
+                                    }
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/20 rounded transition-colors"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Test area */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <Play size={16} className="text-green-400" />
+                Probar diccionario
+              </h4>
+              <textarea
+                placeholder="Escribe texto para probar los reemplazos del diccionario..."
+                value={testText}
+                onChange={(e) => setTestText(e.target.value)}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                rows={3}
+              />
+              <div className="flex items-center gap-3 mt-3">
+                <button
+                  onClick={async () => {
+                    if (window.electronAPI?.testReplacement && testText.trim()) {
+                      const result = await window.electronAPI.testReplacement(testText);
+                      if (result.success) {
+                        setTestResult(result);
+                      }
+                    }
+                  }}
+                  disabled={!testText.trim()}
+                  className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg text-sm text-white transition-colors"
+                >
+                  <Play size={16} />
+                  Probar
+                </button>
+                {testResult && (
+                  <span className={`text-sm ${testResult.changed ? 'text-green-400' : 'text-slate-400'}`}>
+                    {testResult.changed ? 'Texto modificado' : 'Sin cambios'}
+                  </span>
+                )}
+              </div>
+              {testResult && testResult.changed && (
+                <div className="mt-3 p-3 bg-slate-700/50 rounded-lg">
+                  <p className="text-xs text-slate-400 mb-1">Resultado:</p>
+                  <p className="text-green-400 font-mono text-sm">{testResult.result}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Settings */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-3 flex items-center gap-2">
+                <Settings size={16} className="text-blue-400" />
+                Configuración del diccionario
+              </h4>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-white">Incluir términos en prompt de Whisper</p>
+                    <p className="text-xs text-slate-400">Ayuda a Whisper a reconocer palabras especiales</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.updateDictionarySettings) {
+                        await window.electronAPI.updateDictionarySettings({
+                          enableWhisperHints: !dictionary.settings.enableWhisperHints
+                        });
+                        loadDictionary();
+                      }
+                    }}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      dictionary.settings.enableWhisperHints ? 'bg-blue-600' : 'bg-slate-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        dictionary.settings.enableWhisperHints ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-white">Aplicar reemplazos automáticamente</p>
+                    <p className="text-xs text-slate-400">Corrige errores después de la transcripción</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.updateDictionarySettings) {
+                        await window.electronAPI.updateDictionarySettings({
+                          enablePostProcessing: !dictionary.settings.enablePostProcessing
+                        });
+                        loadDictionary();
+                      }
+                    }}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      dictionary.settings.enablePostProcessing ? 'bg-blue-600' : 'bg-slate-600'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        dictionary.settings.enablePostProcessing ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         );
@@ -1979,6 +2383,20 @@ function ControlPanel() {
               General
             </button>
             <button
+              onClick={() => setActiveTab(TABS.DICTIONARY)}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.DICTIONARY
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <BookText size={18} />
+              Diccionario
+              {dictionary.entries.length > 0 && (
+                <span className="ml-auto text-xs bg-slate-600 px-1.5 py-0.5 rounded">{dictionary.entries.length}</span>
+              )}
+            </button>
+            <button
               onClick={() => setActiveTab(TABS.ACCOUNT)}
               className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
                 activeTab === TABS.ACCOUNT
@@ -2083,8 +2501,8 @@ function ControlPanel() {
           <div className="max-w-2xl">
             {renderTabContent()}
 
-            {/* Save button (not shown in history, stats, updates, logs, or help tabs) */}
-            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && activeTab !== TABS.UPDATES && activeTab !== TABS.LOGS && activeTab !== TABS.HELP && (
+            {/* Save button (not shown in history, stats, updates, logs, dictionary, or help tabs) */}
+            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && activeTab !== TABS.UPDATES && activeTab !== TABS.LOGS && activeTab !== TABS.HELP && activeTab !== TABS.DICTIONARY && (
               <div className="mt-8 flex items-center gap-4">
                 <button
                   onClick={saveSettings}

@@ -321,6 +321,122 @@ let backendAccessToken = null;
 let backendRefreshToken = null;
 
 // ==========================================
+// CUSTOM DICTIONARY
+// ==========================================
+// Stores user-defined word replacements for correcting Whisper transcription errors
+// Example: "cojade" -> "COHADE"
+let customDictionary = {
+  version: 1,
+  entries: [],
+  settings: {
+    maxWhisperPromptWords: 40,    // Max terms to include in Whisper prompt (224 token limit)
+    enablePostProcessing: true,   // Apply find/replace after transcription
+    enableWhisperHints: true      // Include terms in Whisper prompt
+  }
+};
+
+// Load dictionary from config.json
+function loadDictionary() {
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (config.customDictionary) {
+        customDictionary = {
+          version: config.customDictionary.version || 1,
+          entries: config.customDictionary.entries || [],
+          settings: {
+            maxWhisperPromptWords: config.customDictionary.settings?.maxWhisperPromptWords || 40,
+            enablePostProcessing: config.customDictionary.settings?.enablePostProcessing !== false,
+            enableWhisperHints: config.customDictionary.settings?.enableWhisperHints !== false
+          }
+        };
+        log('Dictionary loaded:', customDictionary.entries.length, 'entries');
+      }
+    }
+  } catch (err) {
+    logError('Failed to load dictionary:', err.message);
+  }
+}
+
+// Save dictionary to config.json
+function saveDictionary() {
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    let config = {};
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    }
+    config.customDictionary = customDictionary;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    log('Dictionary saved:', customDictionary.entries.length, 'entries');
+  } catch (err) {
+    logError('Failed to save dictionary:', err.message);
+  }
+}
+
+// Generate text for Whisper prompt with top N dictionary terms
+function getDictionaryForWhisperPrompt() {
+  if (!customDictionary.settings.enableWhisperHints) {
+    return '';
+  }
+
+  const enabledEntries = customDictionary.entries.filter(e => e.enabled);
+  if (enabledEntries.length === 0) {
+    return '';
+  }
+
+  // Get the replacement terms (the correct spellings)
+  // Limit to maxWhisperPromptWords to stay within token limits
+  const terms = enabledEntries
+    .slice(0, customDictionary.settings.maxWhisperPromptWords)
+    .map(e => e.replace);
+
+  return terms.join(', ');
+}
+
+// Escape special regex characters
+function escapeRegex(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Apply dictionary find/replace to text
+function applyDictionaryReplacements(text) {
+  if (!customDictionary.settings.enablePostProcessing) {
+    return text;
+  }
+
+  const enabledEntries = customDictionary.entries.filter(e => e.enabled);
+  if (enabledEntries.length === 0) {
+    return text;
+  }
+
+  let result = text;
+  let replacementsMade = 0;
+
+  for (const entry of enabledEntries) {
+    const escapedFind = escapeRegex(entry.find);
+    const flags = entry.caseSensitive ? 'gu' : 'giu';
+
+    // Use word boundaries to avoid partial replacements
+    // \b doesn't work well with Unicode, so we use lookahead/lookbehind
+    const pattern = new RegExp(`(?<=^|[\\s.,;:!?¿¡"'()\\[\\]{}])${escapedFind}(?=$|[\\s.,;:!?¿¡"'()\\[\\]{}])`, flags);
+
+    const newResult = result.replace(pattern, entry.replace);
+    if (newResult !== result) {
+      replacementsMade++;
+      result = newResult;
+    }
+  }
+
+  if (replacementsMade > 0) {
+    log('Dictionary replacements applied:', replacementsMade);
+  }
+
+  return result;
+}
+
+// ==========================================
 // BACKEND API HELPERS
 // ==========================================
 
@@ -1003,6 +1119,11 @@ function setupIpcHandlers() {
         // Apply list formatting only if NOT verbatim mode
         let formattedText = processingMode === 'verbatim' ? result.text : formatNumberedLists(result.text);
 
+        // Apply custom dictionary replacements (except in verbatim mode)
+        if (processingMode !== 'verbatim') {
+          formattedText = applyDictionaryReplacements(formattedText);
+        }
+
         log('=== BACKEND TRANSCRIBE SUCCESS ===');
         log('Processing mode:', processingMode);
         log('Words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
@@ -1211,10 +1332,16 @@ function setupIpcHandlers() {
       );
 
       // Prompt part - helps anchor Whisper and reduce hallucinations
+      // Include dictionary terms to help Whisper recognize custom words
+      const dictTerms = getDictionaryForWhisperPrompt();
+      const whisperPrompt = dictTerms
+        ? `Transcripción literal de dictado de voz en español. Términos especiales: ${dictTerms}. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.`
+        : `Transcripción literal de dictado de voz en español. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.`;
+
       parts.push(
         `--${boundary}${CRLF}`,
         `Content-Disposition: form-data; name="prompt"${CRLF}${CRLF}`,
-        `Transcripción literal de dictado de voz en español. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.${CRLF}`
+        `${whisperPrompt}${CRLF}`
       );
 
       // Temperature part - 0 = most deterministic/literal transcription
@@ -1257,6 +1384,11 @@ function setupIpcHandlers() {
 
       // Apply list formatting only if NOT verbatim mode
       let formattedText = processingMode === 'verbatim' ? result.text : formatNumberedLists(result.text);
+
+      // Apply custom dictionary replacements (except in verbatim mode)
+      if (processingMode !== 'verbatim') {
+        formattedText = applyDictionaryReplacements(formattedText);
+      }
 
       log('=== TRANSCRIBE AUDIO SUCCESS ===');
       log('Processing mode:', processingMode);
@@ -2208,6 +2340,248 @@ Output el texto completo corregido, sin comillas.`;
     }
   });
 
+  // ==========================================
+  // DICTIONARY HANDLERS
+  // ==========================================
+
+  // Get dictionary
+  ipcMain.handle('get-dictionary', () => {
+    return customDictionary;
+  });
+
+  // Set entire dictionary (used for import or bulk updates)
+  ipcMain.handle('set-dictionary', (event, dict) => {
+    const validation = validateIpcMessage('set-dictionary', dict);
+    if (!validation.isValid) {
+      logError('Set-dictionary validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      customDictionary = {
+        version: dict.version || 1,
+        entries: dict.entries || [],
+        settings: {
+          maxWhisperPromptWords: dict.settings?.maxWhisperPromptWords || 40,
+          enablePostProcessing: dict.settings?.enablePostProcessing !== false,
+          enableWhisperHints: dict.settings?.enableWhisperHints !== false
+        }
+      };
+      saveDictionary();
+      logAction('DICTIONARY_UPDATED', { entryCount: customDictionary.entries.length });
+      return { success: true, dictionary: customDictionary };
+    } catch (error) {
+      logError('Failed to set dictionary:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Add dictionary entry
+  ipcMain.handle('add-dictionary-entry', (event, entry) => {
+    const validation = validateIpcMessage('add-dictionary-entry', entry);
+    if (!validation.isValid) {
+      logError('Add-dictionary-entry validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      const newEntry = {
+        id: require('crypto').randomUUID(),
+        find: entry.find.trim(),
+        replace: entry.replace.trim(),
+        caseSensitive: entry.caseSensitive || false,
+        enabled: entry.enabled !== false,
+        soundsLike: entry.soundsLike?.trim() || '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      customDictionary.entries.push(newEntry);
+      saveDictionary();
+      logAction('DICTIONARY_ENTRY_ADDED', { find: newEntry.find, replace: newEntry.replace });
+      return { success: true, entry: newEntry };
+    } catch (error) {
+      logError('Failed to add dictionary entry:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Update dictionary entry
+  ipcMain.handle('update-dictionary-entry', (event, id, updates) => {
+    const validation = validateIpcMessage('update-dictionary-entry', id, updates);
+    if (!validation.isValid) {
+      logError('Update-dictionary-entry validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      const entryIndex = customDictionary.entries.findIndex(e => e.id === id);
+      if (entryIndex === -1) {
+        return { success: false, error: 'Entry not found' };
+      }
+
+      const entry = customDictionary.entries[entryIndex];
+      if (updates.find !== undefined) entry.find = updates.find.trim();
+      if (updates.replace !== undefined) entry.replace = updates.replace.trim();
+      if (updates.caseSensitive !== undefined) entry.caseSensitive = updates.caseSensitive;
+      if (updates.enabled !== undefined) entry.enabled = updates.enabled;
+      if (updates.soundsLike !== undefined) entry.soundsLike = updates.soundsLike.trim();
+      entry.updatedAt = new Date().toISOString();
+
+      saveDictionary();
+      logAction('DICTIONARY_ENTRY_UPDATED', { id, updates: Object.keys(updates) });
+      return { success: true, entry };
+    } catch (error) {
+      logError('Failed to update dictionary entry:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Delete dictionary entry
+  ipcMain.handle('delete-dictionary-entry', (event, id) => {
+    const validation = validateIpcMessage('delete-dictionary-entry', id);
+    if (!validation.isValid) {
+      logError('Delete-dictionary-entry validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      const entryIndex = customDictionary.entries.findIndex(e => e.id === id);
+      if (entryIndex === -1) {
+        return { success: false, error: 'Entry not found' };
+      }
+
+      customDictionary.entries.splice(entryIndex, 1);
+      saveDictionary();
+      logAction('DICTIONARY_ENTRY_DELETED', { id });
+      return { success: true };
+    } catch (error) {
+      logError('Failed to delete dictionary entry:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Import dictionary from JSON
+  ipcMain.handle('import-dictionary', (event, json) => {
+    const validation = validateIpcMessage('import-dictionary', json);
+    if (!validation.isValid) {
+      logError('Import-dictionary validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      const imported = typeof json === 'string' ? JSON.parse(json) : json;
+
+      // Validate structure
+      if (!imported || !Array.isArray(imported.entries)) {
+        return { success: false, error: 'Invalid dictionary format' };
+      }
+
+      // Merge entries (add new ones, skip duplicates by find value)
+      const existingFinds = new Set(customDictionary.entries.map(e => e.find.toLowerCase()));
+      let addedCount = 0;
+
+      for (const entry of imported.entries) {
+        if (!entry.find || !entry.replace) continue;
+        if (existingFinds.has(entry.find.toLowerCase())) continue;
+
+        customDictionary.entries.push({
+          id: require('crypto').randomUUID(),
+          find: entry.find.trim(),
+          replace: entry.replace.trim(),
+          caseSensitive: entry.caseSensitive || false,
+          enabled: entry.enabled !== false,
+          soundsLike: entry.soundsLike?.trim() || '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        existingFinds.add(entry.find.toLowerCase());
+        addedCount++;
+      }
+
+      // Import settings if provided
+      if (imported.settings) {
+        if (imported.settings.maxWhisperPromptWords !== undefined) {
+          customDictionary.settings.maxWhisperPromptWords = imported.settings.maxWhisperPromptWords;
+        }
+        if (imported.settings.enablePostProcessing !== undefined) {
+          customDictionary.settings.enablePostProcessing = imported.settings.enablePostProcessing;
+        }
+        if (imported.settings.enableWhisperHints !== undefined) {
+          customDictionary.settings.enableWhisperHints = imported.settings.enableWhisperHints;
+        }
+      }
+
+      saveDictionary();
+      logAction('DICTIONARY_IMPORTED', { addedCount, totalEntries: customDictionary.entries.length });
+      return { success: true, addedCount, totalEntries: customDictionary.entries.length };
+    } catch (error) {
+      logError('Failed to import dictionary:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Export dictionary to JSON
+  ipcMain.handle('export-dictionary', () => {
+    try {
+      const exportData = {
+        version: customDictionary.version,
+        exportedAt: new Date().toISOString(),
+        entries: customDictionary.entries,
+        settings: customDictionary.settings
+      };
+      logAction('DICTIONARY_EXPORTED', { entryCount: customDictionary.entries.length });
+      return { success: true, data: exportData };
+    } catch (error) {
+      logError('Failed to export dictionary:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Test dictionary replacements on sample text
+  ipcMain.handle('test-replacement', (event, text) => {
+    const validation = validateIpcMessage('test-replacement', text);
+    if (!validation.isValid) {
+      logError('Test-replacement validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      const result = applyDictionaryReplacements(text);
+      return { success: true, original: text, result, changed: text !== result };
+    } catch (error) {
+      logError('Failed to test replacement:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Update dictionary settings
+  ipcMain.handle('update-dictionary-settings', (event, settings) => {
+    const validation = validateIpcMessage('update-dictionary-settings', settings);
+    if (!validation.isValid) {
+      logError('Update-dictionary-settings validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    try {
+      if (settings.maxWhisperPromptWords !== undefined) {
+        customDictionary.settings.maxWhisperPromptWords = Math.max(1, Math.min(100, settings.maxWhisperPromptWords));
+      }
+      if (settings.enablePostProcessing !== undefined) {
+        customDictionary.settings.enablePostProcessing = !!settings.enablePostProcessing;
+      }
+      if (settings.enableWhisperHints !== undefined) {
+        customDictionary.settings.enableWhisperHints = !!settings.enableWhisperHints;
+      }
+      saveDictionary();
+      logAction('DICTIONARY_SETTINGS_UPDATED', settings);
+      return { success: true, settings: customDictionary.settings };
+    } catch (error) {
+      logError('Failed to update dictionary settings:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
   log('IPC handlers set up');
 }
 
@@ -2278,6 +2652,9 @@ app.whenReady().then(async () => {
 
     // Load backend settings
     loadBackendSettings();
+
+    // Load custom dictionary
+    loadDictionary();
 
     // Warmup backend in background (don't await - let app continue starting)
     warmupBackend().catch(err => log('Warmup error (non-critical):', err.message));

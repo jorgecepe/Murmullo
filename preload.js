@@ -69,6 +69,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDebugAudioFolder: () => ipcRenderer.invoke('open-debug-audio-folder'),
   clearDebugAudio: () => ipcRenderer.invoke('clear-debug-audio'),
 
+  // Custom Dictionary
+  getDictionary: () => ipcRenderer.invoke('get-dictionary'),
+  setDictionary: (dict) => ipcRenderer.invoke('set-dictionary', dict),
+  addDictionaryEntry: (entry) => ipcRenderer.invoke('add-dictionary-entry', entry),
+  updateDictionaryEntry: (id, updates) => ipcRenderer.invoke('update-dictionary-entry', id, updates),
+  deleteDictionaryEntry: (id) => ipcRenderer.invoke('delete-dictionary-entry', id),
+  importDictionary: (json) => ipcRenderer.invoke('import-dictionary', json),
+  exportDictionary: () => ipcRenderer.invoke('export-dictionary'),
+  testReplacement: (text) => ipcRenderer.invoke('test-replacement', text),
+  updateDictionarySettings: (settings) => ipcRenderer.invoke('update-dictionary-settings', settings),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();
