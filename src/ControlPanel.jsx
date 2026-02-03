@@ -839,7 +839,7 @@ function ControlPanel() {
                           <div className="flex justify-between text-sm">
                             <span className="text-slate-400">Uso este mes</span>
                             <span className="text-white">
-                              {(userUsage.minutes_used || 0).toFixed?.(1) || '0'} / {userUsage.minutes_limit === -1 ? '∞' : (userUsage.minutes_limit || 30)} min
+                              {(parseFloat(userUsage.minutes_used) || 0).toFixed(1)} / {userUsage.minutes_limit === -1 ? '∞' : (userUsage.minutes_limit || 30)} min
                             </span>
                           </div>
                           {userUsage.minutes_limit !== -1 && userUsage.minutes_limit > 0 && (

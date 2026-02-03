@@ -243,6 +243,36 @@ function loadBackendSettings() {
   }
 }
 
+// Warmup ping to wake up Render (cold start prevention)
+async function warmupBackend() {
+  if (!backendMode || !backendUrl) {
+    log('Skipping backend warmup - backend mode disabled or no URL');
+    return;
+  }
+
+  log('Sending warmup ping to backend...');
+  try {
+    const healthUrl = `${backendUrl}/health`;
+    const startTime = Date.now();
+
+    const response = await fetch(healthUrl, {
+      method: 'GET',
+      timeout: 30000 // 30 second timeout for cold starts
+    });
+
+    const latency = Date.now() - startTime;
+
+    if (response.ok) {
+      log(`Backend warmup successful (${latency}ms)`);
+    } else {
+      log(`Backend warmup returned status ${response.status} (${latency}ms)`);
+    }
+  } catch (err) {
+    log('Backend warmup failed (server may be starting):', err.message);
+    // Don't throw - this is just a warmup, not critical
+  }
+}
+
 // Save backend settings to config file
 function saveBackendSettings() {
   try {
@@ -566,8 +596,10 @@ function createControlPanel() {
   }
 
   controlPanel.on('close', (e) => {
-    e.preventDefault();
-    controlPanel.hide();
+    if (!app.isQuitting) {
+      e.preventDefault();
+      controlPanel.hide();
+    }
   });
 
   log('Control panel created');
@@ -645,7 +677,23 @@ function createTray() {
     }},
     { type: 'separator' },
     { label: 'Salir', click: () => {
+      log('User clicked Salir - quitting app');
       app.isQuitting = true;
+
+      // Force close all windows
+      if (controlPanel && !controlPanel.isDestroyed()) {
+        controlPanel.destroy();
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.destroy();
+      }
+
+      // Destroy tray
+      if (tray) {
+        tray.destroy();
+        tray = null;
+      }
+
       app.quit();
     }}
   ]);
@@ -2011,6 +2059,9 @@ app.whenReady().then(async () => {
     // Load backend settings
     loadBackendSettings();
 
+    // Warmup backend in background (don't await - let app continue starting)
+    warmupBackend().catch(err => log('Warmup error (non-critical):', err.message));
+
     await initDatabase();
     createMainWindow();
     createControlPanel();
@@ -2044,6 +2095,11 @@ app.on('window-all-closed', () => {
   // Otherwise, keep the app running in the tray
 });
 
+app.on('before-quit', () => {
+  log('App before-quit - setting isQuitting flag');
+  app.isQuitting = true;
+});
+
 app.on('will-quit', () => {
   log('App quitting...');
   globalShortcut.unregisterAll();
@@ -2053,6 +2109,12 @@ app.on('will-quit', () => {
   if (tray) {
     tray.destroy();
     tray = null;
+  }
+
+  // Close log stream
+  if (logStream) {
+    logStream.end();
+    logStream = null;
   }
 });
 
