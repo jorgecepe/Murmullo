@@ -121,6 +121,8 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 - [ ] Doble-tap de Ctrl como hotkey alternativo
 - [ ] Selección de micrófono en configuración
 - [ ] Monetización con Stripe
+- [ ] Instalador: cerrar instancias activas antes de instalar
+- [ ] Instalador: desinstalar versión anterior automáticamente
 
 ---
 
