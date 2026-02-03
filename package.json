@@ -77,6 +77,7 @@
       "dist/**/*",
       "main.js",
       "preload.js",
+      "secureStorage.js",
       "node_modules/**/*",
       "!node_modules/**/README*",
       "!node_modules/**/CHANGELOG*",
