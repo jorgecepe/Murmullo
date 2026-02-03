@@ -11,7 +11,14 @@
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
-    "pack": "npm run build && electron-builder --dir"
+    "pack": "npm run build && electron-builder --dir",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:all": "npm run test && npm run test:e2e"
   },
   "keywords": ["voice", "dictation", "whisper", "electron", "spanish"],
   "author": "",
@@ -35,7 +42,15 @@
     "postcss": "^8.4.49",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.2",
-    "wait-on": "^8.0.2"
+    "wait-on": "^8.0.2",
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/ui": "^2.1.0",
+    "@testing-library/react": "^16.0.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "jsdom": "^25.0.0",
+    "@playwright/test": "^1.48.0",
+    "playwright": "^1.48.0"
   },
   "build": {
     "appId": "com.murmullo.app",
