@@ -1,5 +1,55 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component } from 'react';
 import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle } from 'lucide-react';
+
+// Error Boundary to catch rendering errors
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('ControlPanel Error:', error, errorInfo);
+    this.setState({ errorInfo });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-slate-900 text-white p-8">
+          <div className="max-w-2xl mx-auto">
+            <h1 className="text-2xl font-bold text-red-400 mb-4">⚠️ Error en el Panel de Control</h1>
+            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-4 mb-4">
+              <p className="font-mono text-sm">{this.state.error?.toString()}</p>
+            </div>
+            <button
+              onClick={() => {
+                this.setState({ hasError: false, error: null, errorInfo: null });
+                window.location.reload();
+              }}
+              className="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded"
+            >
+              Reintentar
+            </button>
+            {this.state.errorInfo && (
+              <details className="mt-4">
+                <summary className="cursor-pointer text-slate-400">Stack trace</summary>
+                <pre className="mt-2 p-4 bg-slate-800 rounded text-xs overflow-auto">
+                  {this.state.errorInfo.componentStack}
+                </pre>
+              </details>
+            )}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const TABS = {
   GENERAL: 'general',
@@ -208,13 +258,18 @@ function ControlPanel() {
       }
 
       if (result.success) {
-        setUser(result.user);
+        setUser(result.user || { email: authForm.email, plan: 'free' });
         setShowLoginForm(false);
         setAuthForm({ email: '', password: '', name: '' });
         // Load usage info
-        const meResult = await window.electronAPI.backendGetMe();
-        if (meResult.success) {
-          setUserUsage(meResult.limits);
+        try {
+          const meResult = await window.electronAPI.backendGetMe();
+          if (meResult.success && meResult.limits) {
+            setUserUsage(meResult.limits);
+          }
+        } catch (meError) {
+          console.error('Failed to load user usage:', meError);
+          // Don't fail the whole auth flow if usage fetch fails
         }
       } else {
         setAuthError(result.error || 'Authentication failed');
@@ -649,21 +704,21 @@ function ControlPanel() {
                         <div className="flex justify-between items-center mb-2">
                           <span className="text-sm text-slate-400">Plan actual</span>
                           <span className="px-2 py-0.5 bg-blue-600 rounded text-xs text-white capitalize">
-                            {user.plan}
+                            {user?.plan || 'free'}
                           </span>
                         </div>
                         <div className="space-y-1">
                           <div className="flex justify-between text-sm">
                             <span className="text-slate-400">Uso este mes</span>
                             <span className="text-white">
-                              {userUsage.minutes_used?.toFixed(1) || 0} / {userUsage.minutes_limit === -1 ? '∞' : userUsage.minutes_limit} min
+                              {(userUsage.minutes_used || 0).toFixed?.(1) || '0'} / {userUsage.minutes_limit === -1 ? '∞' : (userUsage.minutes_limit || 30)} min
                             </span>
                           </div>
-                          {userUsage.minutes_limit !== -1 && (
+                          {userUsage.minutes_limit !== -1 && userUsage.minutes_limit > 0 && (
                             <div className="w-full bg-slate-700 rounded-full h-2">
                               <div
                                 className="bg-blue-500 h-2 rounded-full transition-all"
-                                style={{ width: `${Math.min(100, (userUsage.minutes_used / userUsage.minutes_limit) * 100)}%` }}
+                                style={{ width: `${Math.min(100, ((userUsage.minutes_used || 0) / (userUsage.minutes_limit || 30)) * 100)}%` }}
                               />
                             </div>
                           )}
@@ -1675,4 +1730,13 @@ function ControlPanel() {
   );
 }
 
-export default ControlPanel;
+// Wrap with ErrorBoundary for better error handling
+function ControlPanelWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <ControlPanel />
+    </ErrorBoundary>
+  );
+}
+
+export default ControlPanelWithErrorBoundary;
