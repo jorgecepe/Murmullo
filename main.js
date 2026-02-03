@@ -298,6 +298,11 @@ function saveBackendSettings() {
   }
 }
 
+// Get normalized backend URL (removes trailing slashes)
+function getBackendUrl() {
+  return backendUrl.replace(/\/+$/, '');
+}
+
 // Use Electron's net.fetch which respects system proxy settings
 // Falls back to Node's fetch if net is not available (shouldn't happen after app.ready)
 function electronFetch(url, options = {}) {
@@ -391,7 +396,7 @@ async function handleBackendResponse(response) {
 // Refresh backend access token
 async function refreshBackendToken() {
   try {
-    const response = await electronFetch(`${backendUrl}/api/v1/auth/refresh`, {
+    const response = await electronFetch(`${getBackendUrl()}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: backendRefreshToken })
@@ -1857,7 +1862,7 @@ Output el texto completo corregido, sin comillas.`;
   ipcMain.handle('backend-login', async (event, email, password) => {
     log('Backend login attempt for:', email);
     try {
-      const response = await electronFetch(`${backendUrl}/api/v1/auth/login`, {
+      const response = await electronFetch(`${getBackendUrl()}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -1885,7 +1890,7 @@ Output el texto completo corregido, sin comillas.`;
   ipcMain.handle('backend-register', async (event, email, password, name) => {
     log('Backend register attempt for:', email);
     try {
-      const response = await electronFetch(`${backendUrl}/api/v1/auth/register`, {
+      const response = await electronFetch(`${getBackendUrl()}/api/v1/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password, name })
@@ -1914,7 +1919,7 @@ Output el texto completo corregido, sin comillas.`;
     log('Backend logout');
     try {
       if (backendAccessToken && backendRefreshToken) {
-        await electronFetch(`${backendUrl}/api/v1/auth/logout`, {
+        await electronFetch(`${getBackendUrl()}/api/v1/auth/logout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
