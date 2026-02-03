@@ -4,6 +4,7 @@ const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const SecureStorage = require('./secureStorage');
 const { validateIpcMessage, sanitizeString } = require('./ipcValidation');
+const { autoUpdater } = require('electron-updater');
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
@@ -193,11 +194,19 @@ function setupContentSecurityPolicy() {
   log('CSP:', csp);
 }
 
-// Prevent multiple instances
+// Prevent multiple instances - MUST be at the top before any other logic
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
+  console.log('Another instance is running, quitting...');
   app.quit();
+  process.exit(0); // Force immediate exit
 }
+
+// Auto-updater state
+let updateAvailable = false;
+let updateDownloaded = false;
+let updateInfo = null;
+let downloadProgress = 0;
 
 let mainWindow = null;
 let controlPanel = null;
@@ -251,6 +260,35 @@ function saveBackendSettings() {
   } catch (err) {
     logError('Failed to save backend settings:', err);
   }
+}
+
+// Fetch with automatic retry for network errors
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      // Don't retry for client errors (4xx), only for server errors (5xx) or network issues
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        return response;
+      }
+      // Server error (5xx) - will retry
+      if (attempt < maxRetries - 1) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+        log(`Server error ${response.status}, retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxRetries - 1) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+        log(`Network error, retrying in ${delay}ms... (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  throw lastError;
 }
 
 // Make authenticated request to backend
@@ -683,6 +721,92 @@ function createValidatedHandler(channel, handler) {
   };
 }
 
+// ==========================================
+// AUTO-UPDATER SETUP
+// ==========================================
+function setupAutoUpdater() {
+  log('Setting up auto-updater...');
+
+  // Configure auto-updater
+  autoUpdater.autoDownload = false; // Don't auto-download, let user decide
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  // Log auto-updater events
+  autoUpdater.logger = {
+    info: (msg) => log('[AutoUpdater]', msg),
+    warn: (msg) => log('[AutoUpdater WARN]', msg),
+    error: (msg) => logError('[AutoUpdater]', msg),
+    debug: (msg) => log('[AutoUpdater DEBUG]', msg)
+  };
+
+  autoUpdater.on('checking-for-update', () => {
+    log('Checking for updates...');
+    sendUpdateStatus('checking');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    log('Update available:', info.version);
+    updateAvailable = true;
+    updateInfo = info;
+    sendUpdateStatus('available', { version: info.version, releaseNotes: info.releaseNotes });
+    logAction('UPDATE_AVAILABLE', { version: info.version });
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    log('No update available, current version is up to date');
+    updateAvailable = false;
+    sendUpdateStatus('not-available');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    downloadProgress = Math.round(progress.percent);
+    log('Download progress:', downloadProgress + '%');
+    sendUpdateStatus('downloading', { percent: downloadProgress, bytesPerSecond: progress.bytesPerSecond });
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    log('Update downloaded:', info.version);
+    updateDownloaded = true;
+    updateInfo = info;
+    sendUpdateStatus('downloaded', { version: info.version });
+    logAction('UPDATE_DOWNLOADED', { version: info.version });
+  });
+
+  autoUpdater.on('error', (error) => {
+    logError('Auto-updater error:', error.message);
+    sendUpdateStatus('error', { message: error.message });
+  });
+
+  // Check for updates after app is ready (only in production)
+  if (!isDev) {
+    // Initial check after a short delay
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch(err => {
+        log('Update check failed:', err.message);
+      });
+    }, 5000);
+
+    // Check periodically (every 4 hours)
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch(err => {
+        log('Periodic update check failed:', err.message);
+      });
+    }, 4 * 60 * 60 * 1000);
+  } else {
+    log('Auto-updater disabled in dev mode');
+  }
+}
+
+// Send update status to renderer
+function sendUpdateStatus(status, data = {}) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status, ...data });
+  }
+  if (controlPanel && !controlPanel.isDestroyed()) {
+    controlPanel.webContents.send('update-status', { status, ...data });
+  }
+}
+
 // IPC Handlers
 function setupIpcHandlers() {
   log('Setting up IPC handlers...');
@@ -942,14 +1066,14 @@ function setupIpcHandlers() {
 
       log('Sending to Whisper API...', uploadFilename, 'body size:', bodyBuffer.length);
 
-      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      const response = await fetchWithRetry('https://api.openai.com/v1/audio/transcriptions', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': `multipart/form-data; boundary=${boundary}`
         },
         body: bodyBuffer
-      });
+      }, 3); // Retry up to 3 times
 
       log('Whisper API response status:', response.status);
 
@@ -1077,7 +1201,7 @@ Output el texto completo corregido, sin comillas.`;
           messages: [{ role: 'user', content: sanitizedText }]
         };
 
-        const response = await fetch(endpoint, {
+        const response = await fetchWithRetry(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1085,7 +1209,7 @@ Output el texto completo corregido, sin comillas.`;
             'anthropic-version': '2023-06-01'
           },
           body: JSON.stringify(body)
-        });
+        }, 3);
 
         const aiLatency = Date.now() - aiStartTime;
         log('Anthropic response status:', response.status);
@@ -1129,14 +1253,14 @@ Output el texto completo corregido, sin comillas.`;
           ]
         };
 
-        const response = await fetch(endpoint, {
+        const response = await fetchWithRetry(endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
           },
           body: JSON.stringify(body)
-        });
+        }, 3);
 
         log('OpenAI response status:', response.status);
 
@@ -1763,6 +1887,67 @@ Output el texto completo corregido, sin comillas.`;
     }
   });
 
+  // ==========================================
+  // AUTO-UPDATE HANDLERS
+  // ==========================================
+
+  // Get current update status
+  ipcMain.handle('get-update-status', () => {
+    return {
+      updateAvailable,
+      updateDownloaded,
+      updateInfo: updateInfo ? {
+        version: updateInfo.version,
+        releaseNotes: updateInfo.releaseNotes,
+        releaseDate: updateInfo.releaseDate
+      } : null,
+      downloadProgress,
+      currentVersion: app.getVersion()
+    };
+  });
+
+  // Check for updates manually
+  ipcMain.handle('check-for-updates', async () => {
+    log('Manual update check requested');
+    if (isDev) {
+      return { success: false, error: 'Updates disabled in development mode' };
+    }
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      return { success: true, updateInfo: result?.updateInfo };
+    } catch (error) {
+      logError('Update check failed:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Download update
+  ipcMain.handle('download-update', async () => {
+    log('Download update requested');
+    if (!updateAvailable) {
+      return { success: false, error: 'No update available' };
+    }
+    try {
+      await autoUpdater.downloadUpdate();
+      return { success: true };
+    } catch (error) {
+      logError('Download update failed:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Install update and restart
+  ipcMain.handle('install-update', () => {
+    log('Install update requested');
+    if (!updateDownloaded) {
+      return { success: false, error: 'Update not downloaded yet' };
+    }
+    logAction('UPDATE_INSTALLING', { version: updateInfo?.version });
+    // This will quit the app and install the update
+    autoUpdater.quitAndInstall(false, true);
+    return { success: true };
+  });
+
   log('IPC handlers set up');
 }
 
@@ -1832,6 +2017,7 @@ app.whenReady().then(async () => {
     createTray();
     registerHotkey(currentHotkey);
     setupIpcHandlers();
+    setupAutoUpdater();
 
     log('Initialization complete');
 

@@ -57,10 +57,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   backendGetMe: () => ipcRenderer.invoke('backend-get-me'),
   backendGetUsage: () => ipcRenderer.invoke('backend-get-usage'),
 
+  // Auto-updates
+  getUpdateStatus: () => ipcRenderer.invoke('get-update-status'),
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
+  installUpdate: () => ipcRenderer.invoke('install-update'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();
     ipcRenderer.on('toggle-dictation', handler);
     return () => ipcRenderer.removeListener('toggle-dictation', handler);
+  },
+
+  onUpdateStatus: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on('update-status', handler);
+    return () => ipcRenderer.removeListener('update-status', handler);
   }
 });

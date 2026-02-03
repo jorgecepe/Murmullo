@@ -7,6 +7,38 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.4.0] - 2026-02-03
+
+### Agregado
+- **Auto-actualizaciones**: Murmullo detecta, descarga e instala actualizaciones automáticamente
+- **Nueva pestaña "Actualizaciones"**: Ver estado de updates, descargar e instalar manualmente
+- **Indicador de progreso detallado**: Muestra en qué etapa está el procesamiento (Preparando audio, Transcribiendo, Procesando con IA, etc.)
+- **Toast de errores visible**: Los errores ahora se muestran como notificaciones visibles en lugar de solo en tooltip
+- **Sonido de completado**: Beep sutil al terminar una transcripción exitosamente
+- **Auto-guardado de settings**: Los cambios se guardan automáticamente con debounce de 1 segundo
+- **Exportar historial a CSV**: Botón para descargar todas las transcripciones como archivo CSV
+- **Retry automático para errores de red**: Las llamadas a APIs reintentan hasta 3 veces con backoff exponencial
+- **Guía de troubleshooting**: Nuevo archivo TROUBLESHOOTING.md con soluciones a problemas comunes
+
+### Mejorado
+- **Prevención de múltiples instancias**: Uso de `process.exit(0)` para garantizar cierre inmediato de instancias duplicadas
+- **CI/CD para releases**: GitHub Actions publica releases automáticamente cuando se crea un tag
+
+### Build
+- `Murmullo Setup 1.4.0.exe` - Instalador NSIS con auto-update
+- `Murmullo-Portable-1.4.0.exe` - Versión portable
+
+---
+
+## [1.3.0] - 2026-01-30
+
+### Agregado
+- **Backend mode**: Conexión a servidor Murmullo para usar sin API keys propias
+- **Sistema de autenticación**: Login/registro para usuarios del backend
+- **Tracking de uso**: Muestra minutos utilizados vs límite del plan
+
+---
+
 ## [1.2.0] - 2026-01-23
 
 ### Agregado
@@ -84,10 +116,11 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ## Próximas versiones (planificado)
 
-### [1.3.0] - Por definir
+### [1.5.0] - Por definir
 - [ ] Integración con Groq para transcripción más rápida
 - [ ] Doble-tap de Ctrl como hotkey alternativo
 - [ ] Selección de micrófono en configuración
+- [ ] Monetización con Stripe
 
 ---
 

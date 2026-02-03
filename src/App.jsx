@@ -14,6 +14,8 @@ function App() {
   const [status, setStatus] = useState(STATUS.IDLE);
   const [errorMessage, setErrorMessage] = useState('');
   const [lastText, setLastText] = useState('');
+  const [processingStage, setProcessingStage] = useState(''); // Detailed progress indicator
+  const [toast, setToast] = useState(null); // Toast for visible notifications
   const [settings, setSettings] = useState({
     processingMode: 'smart',
     language: 'es',
@@ -25,6 +27,39 @@ function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
+  const toastTimeoutRef = useRef(null);
+
+  // Play completion sound
+  const playCompletionSound = useCallback(() => {
+    try {
+      // Base64-encoded short success beep (WAV format, ~100ms beep at 880Hz)
+      const successBeep = 'data:audio/wav;base64,UklGRl4AAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YToAAAAA//8BAP7/AgD9/wMA/P8EAPv/BQD6/wYA+f8HAPj/CAD3/wkA9v8KAPX/CwD0/wwA8/8NAPL/DgDx/w8A8P8QAPP/DwD2/w4A+f8NAP3/CgD//wgAAQAGAAQABAAHAAEACv/+//3/';
+      const audio = new Audio(successBeep);
+      audio.volume = 0.3;
+      audio.play().catch(() => {}); // Ignore if autoplay blocked
+    } catch (e) {
+      // Silently fail if audio doesn't work
+    }
+  }, []);
+
+  // Show toast notification
+  const showToast = useCallback((type, message, duration = 5000) => {
+    // Clear any existing toast timeout
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToast({ type, message });
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null);
+    }, duration);
+  }, []);
+
+  // Show error toast when status changes to ERROR
+  useEffect(() => {
+    if (status === STATUS.ERROR && errorMessage) {
+      showToast('error', errorMessage);
+    }
+  }, [status, errorMessage, showToast]);
 
   // Cleanup function to properly release audio resources
   const cleanupAudioResources = useCallback(() => {
@@ -291,6 +326,9 @@ function App() {
         throw new Error('No se grabó audio. Por favor intenta de nuevo.');
       }
 
+      // Stage 1: Converting audio
+      setProcessingStage('Preparando audio...');
+
       // Convert to WAV to avoid Chromium's corrupted WebM header bug
       let arrayBuffer;
       try {
@@ -308,6 +346,9 @@ function App() {
       const currentAnthropicKey = localStorage.getItem('anthropicKey') || '';
 
       console.log('[App] Calling transcribeAudio with API key:', currentOpenAIKey ? 'SET' : 'NOT SET');
+
+      // Stage 2: Transcribing
+      setProcessingStage('Transcribiendo...');
 
       // Transcribe
       const transcriptionResult = await window.electronAPI.transcribeAudio(
@@ -329,6 +370,9 @@ function App() {
 
       // Process with AI if smart mode
       if (settings.processingMode === 'smart' && finalText) {
+        // Stage 3: AI Processing
+        setProcessingStage('Procesando con IA...');
+
         console.log('[App] Processing with AI, provider:', settings.reasoningProvider);
         const processResult = await window.electronAPI.processText(
           finalText,
@@ -348,9 +392,15 @@ function App() {
         }
       }
 
+      // Stage 4: Pasting
+      setProcessingStage('Pegando texto...');
+
       // Paste text
       console.log('[App] Pasting text...');
       await window.electronAPI.pasteText(finalText);
+
+      // Stage 5: Saving
+      setProcessingStage('Guardando...');
 
       // Save to history
       console.log('[App] Saving to history...');
@@ -362,7 +412,9 @@ function App() {
       });
 
       setLastText(finalText);
+      setProcessingStage('');
       setStatus(STATUS.SUCCESS);
+      playCompletionSound();
       console.log('[App] Success!');
 
       // Reset to idle after 2 seconds
@@ -372,6 +424,7 @@ function App() {
 
     } catch (error) {
       console.error('[App] Processing error:', error);
+      setProcessingStage('');
       setStatus(STATUS.ERROR);
       setErrorMessage(error.message);
 
@@ -386,7 +439,30 @@ function App() {
   // Minimal floating indicator - just a small circle that shows status
   // No click needed - only responds to hotkey (Ctrl+Shift+Space)
   return (
-    <div className="w-[60px] h-[60px] flex items-center justify-center bg-transparent">
+    <div className="w-[60px] h-[60px] flex flex-col items-center justify-center bg-transparent relative">
+      {/* Toast notification - appears above the indicator */}
+      {toast && (
+        <div
+          className={`
+            absolute -top-16 left-1/2 -translate-x-1/2 whitespace-nowrap
+            px-3 py-2 rounded-lg shadow-lg text-xs font-medium
+            animate-fade-in z-50 max-w-[200px] text-center
+            ${toast.type === 'error' ? 'bg-red-600 text-white' : ''}
+            ${toast.type === 'success' ? 'bg-green-600 text-white' : ''}
+            ${toast.type === 'info' ? 'bg-blue-600 text-white' : ''}
+          `}
+        >
+          {toast.message}
+        </div>
+      )}
+
+      {/* Processing stage indicator - shows what step we're on */}
+      {status === STATUS.PROCESSING && processingStage && (
+        <div className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-800/95 text-white px-2 py-1 rounded text-[10px] font-medium shadow-lg">
+          {processingStage}
+        </div>
+      )}
+
       {/* Minimal status indicator */}
       <div
         className={`
@@ -400,7 +476,7 @@ function App() {
         title={
           status === STATUS.IDLE ? 'Murmullo - Ctrl+Shift+Space para grabar' :
           status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
-          status === STATUS.PROCESSING ? 'Procesando...' :
+          status === STATUS.PROCESSING ? processingStage || 'Procesando...' :
           status === STATUS.SUCCESS ? 'Listo' :
           errorMessage || 'Error'
         }

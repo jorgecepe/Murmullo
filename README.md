@@ -24,19 +24,24 @@ Los términos técnicos se mantienen en inglés automáticamente.
 
 - **Español técnico**: Transcribe en español preservando terminología en inglés
 - **Dos modos**: Rápido (solo transcripción) o Inteligente (con corrección IA)
-- **Hotkey ergonómico**: `Ctrl+Shift+Space` por defecto
+- **Hotkey ergonómico**: `Ctrl+Shift+Space` por defecto (personalizable)
 - **Sin privilegios de admin**: Se instala en la carpeta del usuario
-- **Multi-proveedor**: OpenAI Whisper, Claude, Gemini, Groq, o local con whisper.cpp
-- **Privacidad**: Opción de transcripción 100% local
+- **Multi-proveedor**: OpenAI Whisper o Claude para post-procesamiento
+- **Modo Backend**: Usa el servicio en la nube sin necesidad de API keys propias
+- **Auto-actualizaciones**: Recibe updates automáticamente
+- **Indicador de progreso**: Muestra qué está haciendo en cada momento
+- **Exportar historial**: Exporta tus transcripciones a CSV
 
 ## Instalación Rápida
 
 ### Desde Releases (Recomendado)
 
 Descarga el instalador desde [Releases](../../releases):
-- **Windows**: `Murmullo Setup 1.1.0.exe` (instalador) o `Murmullo-Portable-1.1.0.exe` (portable)
-- **macOS**: `Murmullo-1.1.0.dmg`
-- **Linux**: `Murmullo-1.1.0.AppImage`
+- **Windows**: `Murmullo Setup 1.4.0.exe` (instalador) o `Murmullo-Portable-1.4.0.exe` (portable)
+- **macOS**: `Murmullo-1.4.0.dmg`
+- **Linux**: `Murmullo-1.4.0.AppImage`
+
+**Actualizaciones automáticas**: A partir de v1.4.0, Murmullo detecta y descarga actualizaciones automáticamente.
 
 ### Desde el Código Fuente
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Component } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle } from 'lucide-react';
 
 // Error Boundary to catch rendering errors
 class ErrorBoundary extends Component {
@@ -58,6 +58,7 @@ const TABS = {
   HOTKEY: 'hotkey',
   HISTORY: 'history',
   STATS: 'stats',
+  UPDATES: 'updates',
   LOGS: 'logs',
   HELP: 'help'
 };
@@ -110,6 +111,17 @@ function ControlPanel() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const [userUsage, setUserUsage] = useState(null);
+
+  // Auto-update state
+  const [updateStatus, setUpdateStatus] = useState({
+    status: 'idle', // idle, checking, available, downloading, downloaded, error, not-available
+    updateAvailable: false,
+    updateDownloaded: false,
+    version: null,
+    downloadProgress: 0,
+    error: null,
+    currentVersion: '...'
+  });
 
   // Load settings on mount
   useEffect(() => {
@@ -183,6 +195,42 @@ function ControlPanel() {
         }
       });
     }
+
+    // Load update status
+    if (window.electronAPI?.getUpdateStatus) {
+      window.electronAPI.getUpdateStatus().then(status => {
+        setUpdateStatus(prev => ({
+          ...prev,
+          updateAvailable: status.updateAvailable,
+          updateDownloaded: status.updateDownloaded,
+          version: status.updateInfo?.version || null,
+          downloadProgress: status.downloadProgress,
+          currentVersion: status.currentVersion,
+          status: status.updateDownloaded ? 'downloaded' : status.updateAvailable ? 'available' : 'idle'
+        }));
+      });
+    }
+
+    // Listen for update status changes
+    let unsubscribeUpdate;
+    if (window.electronAPI?.onUpdateStatus) {
+      unsubscribeUpdate = window.electronAPI.onUpdateStatus((data) => {
+        console.log('[ControlPanel] Update status:', data);
+        setUpdateStatus(prev => ({
+          ...prev,
+          status: data.status,
+          version: data.version || prev.version,
+          downloadProgress: data.percent || prev.downloadProgress,
+          error: data.message || null,
+          updateAvailable: data.status === 'available' || data.status === 'downloading' || data.status === 'downloaded' || prev.updateAvailable,
+          updateDownloaded: data.status === 'downloaded' || prev.updateDownloaded
+        }));
+      });
+    }
+
+    return () => {
+      if (unsubscribeUpdate) unsubscribeUpdate();
+    };
   }, []);
 
   // Check backend status and load user
@@ -296,6 +344,39 @@ function ControlPanel() {
     if (window.electronAPI) {
       const transcriptions = await window.electronAPI.getTranscriptions(500); // Get more for stats
       setHistory(transcriptions);
+    }
+  };
+
+  // Auto-update functions
+  const checkForUpdates = async () => {
+    if (!window.electronAPI?.checkForUpdates) return;
+    setUpdateStatus(prev => ({ ...prev, status: 'checking', error: null }));
+    try {
+      const result = await window.electronAPI.checkForUpdates();
+      if (!result.success && result.error) {
+        setUpdateStatus(prev => ({ ...prev, status: 'error', error: result.error }));
+      }
+    } catch (err) {
+      setUpdateStatus(prev => ({ ...prev, status: 'error', error: err.message }));
+    }
+  };
+
+  const downloadUpdate = async () => {
+    if (!window.electronAPI?.downloadUpdate) return;
+    setUpdateStatus(prev => ({ ...prev, status: 'downloading', downloadProgress: 0 }));
+    try {
+      await window.electronAPI.downloadUpdate();
+    } catch (err) {
+      setUpdateStatus(prev => ({ ...prev, status: 'error', error: err.message }));
+    }
+  };
+
+  const installUpdate = async () => {
+    if (!window.electronAPI?.installUpdate) return;
+    try {
+      await window.electronAPI.installUpdate();
+    } catch (err) {
+      setUpdateStatus(prev => ({ ...prev, status: 'error', error: err.message }));
     }
   };
 
@@ -456,9 +537,30 @@ function ControlPanel() {
   };
 
   const stats = calculateStats();
+  const autoSaveTimeoutRef = React.useRef(null);
+  const [autoSaving, setAutoSaving] = React.useState(false);
+
+  // Auto-save settings with debounce
+  const autoSaveSettings = React.useCallback((newSettings) => {
+    // Clear any pending auto-save
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    // Debounce: wait 1 second before saving
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      Object.entries(newSettings).forEach(([key, value]) => {
+        localStorage.setItem(key, value);
+      });
+      setAutoSaving(true);
+      setTimeout(() => setAutoSaving(false), 1500);
+    }, 1000);
+  }, []);
 
   const handleSettingChange = (key, value) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    const newSettings = { ...settings, [key]: value };
+    setSettings(newSettings);
+    autoSaveSettings(newSettings);
   };
 
   const handleApiKeyChange = (key, value) => {
@@ -1145,12 +1247,36 @@ function ControlPanel() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium text-slate-300">Historial de transcripciones</h3>
-              <button
-                onClick={loadHistory}
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                Actualizar
-              </button>
+              <div className="flex items-center gap-2">
+                {history.length > 0 && (
+                  <button
+                    onClick={() => {
+                      // Export as CSV
+                      const csv = history.map(t =>
+                        `"${t.timestamp}","${(t.processed_text || t.original_text || '').replace(/"/g, '""')}","${t.processing_method || 'none'}"`
+                      ).join('\n');
+                      const csvContent = `"Fecha","Texto","Modo"\n${csv}`;
+                      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `murmullo-historial-${new Date().toISOString().split('T')[0]}.csv`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-500/10 px-2 py-1 rounded"
+                  >
+                    <Download size={12} />
+                    Exportar CSV
+                  </button>
+                )}
+                <button
+                  onClick={loadHistory}
+                  className="text-xs text-blue-400 hover:text-blue-300"
+                >
+                  Actualizar
+                </button>
+              </div>
             </div>
 
             {history.length === 0 ? (
@@ -1305,6 +1431,124 @@ function ControlPanel() {
             >
               Actualizar estadísticas
             </button>
+          </div>
+        );
+
+      case TABS.UPDATES:
+        return (
+          <div className="space-y-6">
+            <h3 className="text-lg font-medium text-slate-200">Actualizaciones</h3>
+
+            {/* Current version */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-slate-400">Versión actual</p>
+                  <p className="text-xl font-bold text-white">v{updateStatus.currentVersion}</p>
+                </div>
+                <button
+                  onClick={checkForUpdates}
+                  disabled={updateStatus.status === 'checking' || updateStatus.status === 'downloading'}
+                  className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  <RefreshCw size={16} className={updateStatus.status === 'checking' ? 'animate-spin' : ''} />
+                  {updateStatus.status === 'checking' ? 'Buscando...' : 'Buscar actualizaciones'}
+                </button>
+              </div>
+            </div>
+
+            {/* Update status */}
+            {updateStatus.status === 'not-available' && (
+              <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 flex items-center gap-3">
+                <CheckCircle2 className="text-green-400" size={24} />
+                <div>
+                  <p className="font-medium text-green-400">Estás al día</p>
+                  <p className="text-sm text-slate-400">No hay actualizaciones disponibles.</p>
+                </div>
+              </div>
+            )}
+
+            {updateStatus.status === 'available' && !updateStatus.updateDownloaded && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-4">
+                  <ArrowDownCircle className="text-blue-400" size={24} />
+                  <div>
+                    <p className="font-medium text-blue-400">Nueva versión disponible</p>
+                    <p className="text-sm text-slate-400">v{updateStatus.version}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={downloadUpdate}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white px-4 py-3 rounded-lg transition-colors"
+                >
+                  <Download size={18} />
+                  Descargar actualización
+                </button>
+              </div>
+            )}
+
+            {updateStatus.status === 'downloading' && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-4">
+                  <Loader2 className="text-blue-400 animate-spin" size={24} />
+                  <div>
+                    <p className="font-medium text-blue-400">Descargando actualización...</p>
+                    <p className="text-sm text-slate-400">{updateStatus.downloadProgress}% completado</p>
+                  </div>
+                </div>
+                <div className="w-full bg-slate-700 rounded-full h-3">
+                  <div
+                    className="bg-blue-500 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${updateStatus.downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updateStatus.status === 'downloaded' && (
+              <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
+                <div className="flex items-center gap-3 mb-4">
+                  <CheckCircle2 className="text-green-400" size={24} />
+                  <div>
+                    <p className="font-medium text-green-400">Actualización lista</p>
+                    <p className="text-sm text-slate-400">v{updateStatus.version} descargada. Reinicia para instalar.</p>
+                  </div>
+                </div>
+                <button
+                  onClick={installUpdate}
+                  className="w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white px-4 py-3 rounded-lg transition-colors"
+                >
+                  <RefreshCw size={18} />
+                  Reiniciar e instalar
+                </button>
+                <p className="text-xs text-slate-500 mt-2 text-center">
+                  La aplicación se cerrará y se instalará la actualización automáticamente.
+                </p>
+              </div>
+            )}
+
+            {updateStatus.status === 'error' && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 flex items-center gap-3">
+                <XCircle className="text-red-400" size={24} />
+                <div>
+                  <p className="font-medium text-red-400">Error al buscar actualizaciones</p>
+                  <p className="text-sm text-slate-400">{updateStatus.error || 'Error desconocido'}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Auto-update info */}
+            <div className="bg-slate-800/50 rounded-xl p-4">
+              <h4 className="text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
+                <Info size={16} className="text-blue-400" />
+                Información sobre actualizaciones
+              </h4>
+              <ul className="text-sm text-slate-400 space-y-2">
+                <li>• Las actualizaciones se buscan automáticamente cada 4 horas.</li>
+                <li>• Puedes descargar e instalar manualmente desde esta pestaña.</li>
+                <li>• Las actualizaciones se publican en <a href="https://github.com/jorgecepe/Murmullo/releases" target="_blank" rel="noopener" className="text-blue-400 hover:underline">GitHub Releases</a>.</li>
+              </ul>
+            </div>
           </div>
         );
 
@@ -1678,6 +1922,23 @@ function ControlPanel() {
               Estadísticas
             </button>
             <button
+              onClick={() => setActiveTab(TABS.UPDATES)}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.UPDATES
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <ArrowDownCircle size={18} />
+              Actualizaciones
+              {updateStatus.updateAvailable && !updateStatus.updateDownloaded && (
+                <span className="ml-auto w-2 h-2 bg-blue-500 rounded-full animate-pulse"></span>
+              )}
+              {updateStatus.updateDownloaded && (
+                <span className="ml-auto w-2 h-2 bg-green-500 rounded-full"></span>
+              )}
+            </button>
+            <button
               onClick={() => { setActiveTab(TABS.LOGS); loadLogFiles(); }}
               className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
                 activeTab === TABS.LOGS
@@ -1707,8 +1968,8 @@ function ControlPanel() {
           <div className="max-w-2xl">
             {renderTabContent()}
 
-            {/* Save button (not shown in history, stats, logs, or help tabs) */}
-            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && activeTab !== TABS.LOGS && activeTab !== TABS.HELP && (
+            {/* Save button (not shown in history, stats, updates, logs, or help tabs) */}
+            {activeTab !== TABS.HISTORY && activeTab !== TABS.STATS && activeTab !== TABS.UPDATES && activeTab !== TABS.LOGS && activeTab !== TABS.HELP && (
               <div className="mt-8 flex items-center gap-4">
                 <button
                   onClick={saveSettings}
@@ -1719,6 +1980,12 @@ function ControlPanel() {
                 </button>
                 {saved && (
                   <span className="text-green-400 text-sm">Guardado</span>
+                )}
+                {autoSaving && !saved && (
+                  <span className="text-slate-400 text-sm flex items-center gap-1">
+                    <CheckCircle2 size={14} className="text-green-400" />
+                    Auto-guardado
+                  </span>
                 )}
               </div>
             )}
