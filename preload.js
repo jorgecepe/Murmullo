@@ -46,6 +46,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setHotkey: (hotkey) => ipcRenderer.invoke('set-hotkey', hotkey),
   getAvailableHotkeys: () => ipcRenderer.invoke('get-available-hotkeys'),
 
+  // Backend mode
+  getBackendSettings: () => ipcRenderer.invoke('get-backend-settings'),
+  setBackendMode: (enabled) => ipcRenderer.invoke('set-backend-mode', enabled),
+  setBackendUrl: (url) => ipcRenderer.invoke('set-backend-url', url),
+  checkBackendHealth: () => ipcRenderer.invoke('check-backend-health'),
+  backendLogin: (email, password) => ipcRenderer.invoke('backend-login', email, password),
+  backendRegister: (email, password, name) => ipcRenderer.invoke('backend-register', email, password, name),
+  backendLogout: () => ipcRenderer.invoke('backend-logout'),
+  backendGetMe: () => ipcRenderer.invoke('backend-get-me'),
+  backendGetUsage: () => ipcRenderer.invoke('backend-get-usage'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle } from 'lucide-react';
 
 const TABS = {
   GENERAL: 'general',
+  ACCOUNT: 'account',
   API_KEYS: 'api-keys',
   HOTKEY: 'hotkey',
   HISTORY: 'history',
@@ -47,6 +48,18 @@ function ControlPanel() {
   const [availableHotkeys, setAvailableHotkeys] = useState([]);
   const [customHotkey, setCustomHotkey] = useState('');
   const [hotkeyStatus, setHotkeyStatus] = useState({ message: '', type: '' });
+
+  // Backend/Online mode state
+  const [backendMode, setBackendMode] = useState(false);
+  const [backendUrl, setBackendUrl] = useState('http://localhost:3000');
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'checking', 'online', 'offline'
+  const [user, setUser] = useState(null);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [isRegister, setIsRegister] = useState(false);
+  const [authForm, setAuthForm] = useState({ email: '', password: '', name: '' });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [userUsage, setUserUsage] = useState(null);
 
   // Load settings on mount
   useEffect(() => {
@@ -107,7 +120,120 @@ function ControlPanel() {
         }
       });
     }
+
+    // Load backend settings from main process
+    if (window.electronAPI?.getBackendSettings) {
+      window.electronAPI.getBackendSettings().then(settings => {
+        setBackendMode(settings.backendMode);
+        setBackendUrl(settings.backendUrl);
+        if (settings.backendMode) {
+          checkBackendAndLoadUser();
+        } else {
+          setBackendStatus('offline');
+        }
+      });
+    }
   }, []);
+
+  // Check backend status and load user
+  const checkBackendAndLoadUser = async () => {
+    setBackendStatus('checking');
+    try {
+      const healthResult = await window.electronAPI?.checkBackendHealth();
+      const isOnline = healthResult?.online || false;
+      setBackendStatus(isOnline ? 'online' : 'offline');
+
+      if (isOnline) {
+        try {
+          const result = await window.electronAPI.backendGetMe();
+          if (result.success) {
+            setUser(result.user);
+            setUserUsage(result.limits);
+          } else {
+            // Not authenticated
+            setUser(null);
+          }
+        } catch (err) {
+          setUser(null);
+        }
+      }
+    } catch (err) {
+      setBackendStatus('offline');
+    }
+  };
+
+  // Toggle backend mode
+  const toggleBackendMode = async (enabled) => {
+    setBackendMode(enabled);
+    await window.electronAPI?.setBackendMode(enabled);
+
+    if (enabled) {
+      await checkBackendAndLoadUser();
+    } else {
+      setBackendStatus('offline');
+      setUser(null);
+    }
+  };
+
+  // Update backend URL
+  const updateBackendUrl = async (url) => {
+    setBackendUrl(url);
+    await window.electronAPI?.setBackendUrl(url);
+    if (backendMode) {
+      await checkBackendAndLoadUser();
+    }
+  };
+
+  // Handle auth form submit
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setAuthLoading(true);
+
+    try {
+      let result;
+      if (isRegister) {
+        result = await window.electronAPI.backendRegister(
+          authForm.email,
+          authForm.password,
+          authForm.name
+        );
+      } else {
+        result = await window.electronAPI.backendLogin(
+          authForm.email,
+          authForm.password
+        );
+      }
+
+      if (result.success) {
+        setUser(result.user);
+        setShowLoginForm(false);
+        setAuthForm({ email: '', password: '', name: '' });
+        // Load usage info
+        const meResult = await window.electronAPI.backendGetMe();
+        if (meResult.success) {
+          setUserUsage(meResult.limits);
+        }
+      } else {
+        setAuthError(result.error || 'Authentication failed');
+      }
+    } catch (err) {
+      setAuthError(err.message || 'Authentication failed');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // Handle logout
+  const handleLogout = async () => {
+    try {
+      await window.electronAPI.backendLogout();
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+    setUser(null);
+    setUserUsage(null);
+  };
 
   const loadHistory = async () => {
     if (window.electronAPI) {
@@ -418,6 +544,267 @@ function ControlPanel() {
                 )}
               </select>
             </div>
+          </div>
+        );
+
+      case TABS.ACCOUNT:
+        return (
+          <div className="space-y-6">
+            {/* Backend Mode Toggle */}
+            <div className="p-4 bg-slate-700/50 rounded-lg">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-medium text-white">Modo de conexión</h3>
+                  <p className="text-sm text-slate-400">
+                    {backendMode
+                      ? 'Conectado al servidor (no necesitas API keys propias)'
+                      : 'Modo offline (usa tus propias API keys)'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => toggleBackendMode(!backendMode)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    backendMode ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      backendMode ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {backendMode && (
+                <div className="mt-4">
+                  <label className="block text-sm text-slate-400 mb-1">URL del servidor</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={backendUrl}
+                      onChange={(e) => setBackendUrl(e.target.value)}
+                      className="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-white text-sm"
+                      placeholder="https://api.murmullo.app"
+                    />
+                    <button
+                      onClick={() => updateBackendUrl(backendUrl)}
+                      className="px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded text-white text-sm"
+                    >
+                      Conectar
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    {backendStatus === 'checking' && (
+                      <>
+                        <Loader2 size={14} className="animate-spin text-blue-400" />
+                        <span className="text-sm text-slate-400">Verificando conexión...</span>
+                      </>
+                    )}
+                    {backendStatus === 'online' && (
+                      <>
+                        <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                        <span className="text-sm text-green-400">Servidor conectado</span>
+                      </>
+                    )}
+                    {backendStatus === 'offline' && (
+                      <>
+                        <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                        <span className="text-sm text-red-400">Servidor no disponible</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* User Section (when backend mode is on) */}
+            {backendMode && backendStatus === 'online' && (
+              <div className="p-4 bg-slate-700/50 rounded-lg">
+                {user ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
+                          <User size={20} className="text-white" />
+                        </div>
+                        <div>
+                          <p className="font-medium text-white">{user.name || user.email}</p>
+                          <p className="text-sm text-slate-400">{user.email}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={handleLogout}
+                        className="flex items-center gap-2 px-3 py-2 text-red-400 hover:bg-red-500/20 rounded transition-colors"
+                      >
+                        <LogOut size={16} />
+                        Cerrar sesión
+                      </button>
+                    </div>
+
+                    {/* Plan and Usage */}
+                    {userUsage && (
+                      <div className="mt-4 p-3 bg-slate-800 rounded">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-sm text-slate-400">Plan actual</span>
+                          <span className="px-2 py-0.5 bg-blue-600 rounded text-xs text-white capitalize">
+                            {user.plan}
+                          </span>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-slate-400">Uso este mes</span>
+                            <span className="text-white">
+                              {userUsage.minutes_used?.toFixed(1) || 0} / {userUsage.minutes_limit === -1 ? '∞' : userUsage.minutes_limit} min
+                            </span>
+                          </div>
+                          {userUsage.minutes_limit !== -1 && (
+                            <div className="w-full bg-slate-700 rounded-full h-2">
+                              <div
+                                className="bg-blue-500 h-2 rounded-full transition-all"
+                                style={{ width: `${Math.min(100, (userUsage.minutes_used / userUsage.minutes_limit) * 100)}%` }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : showLoginForm ? (
+                  <form onSubmit={handleAuthSubmit} className="space-y-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-medium text-white">
+                        {isRegister ? 'Crear cuenta' : 'Iniciar sesión'}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowLoginForm(false);
+                          setAuthError('');
+                          setAuthForm({ email: '', password: '', name: '' });
+                        }}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+
+                    {authError && (
+                      <div className="flex items-center gap-2 p-3 bg-red-500/20 border border-red-500/50 rounded text-red-400 text-sm">
+                        <AlertCircle size={16} />
+                        {authError}
+                      </div>
+                    )}
+
+                    {isRegister && (
+                      <div>
+                        <label className="block text-sm text-slate-400 mb-1">Nombre</label>
+                        <div className="relative">
+                          <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                          <input
+                            type="text"
+                            value={authForm.name}
+                            onChange={(e) => setAuthForm(prev => ({ ...prev, name: e.target.value }))}
+                            className="w-full bg-slate-800 text-white pl-10 pr-4 py-2 rounded border border-slate-600 focus:border-blue-500 focus:outline-none"
+                            placeholder="Tu nombre"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-sm text-slate-400 mb-1">Email</label>
+                      <div className="relative">
+                        <Mail size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                        <input
+                          type="email"
+                          value={authForm.email}
+                          onChange={(e) => setAuthForm(prev => ({ ...prev, email: e.target.value }))}
+                          required
+                          className="w-full bg-slate-800 text-white pl-10 pr-4 py-2 rounded border border-slate-600 focus:border-blue-500 focus:outline-none"
+                          placeholder="tu@email.com"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-slate-400 mb-1">Contraseña</label>
+                      <div className="relative">
+                        <Lock size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                        <input
+                          type="password"
+                          value={authForm.password}
+                          onChange={(e) => setAuthForm(prev => ({ ...prev, password: e.target.value }))}
+                          required
+                          minLength={8}
+                          className="w-full bg-slate-800 text-white pl-10 pr-4 py-2 rounded border border-slate-600 focus:border-blue-500 focus:outline-none"
+                          placeholder="Mínimo 8 caracteres"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white py-2 rounded font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      {authLoading && <Loader2 size={18} className="animate-spin" />}
+                      {isRegister ? 'Crear cuenta' : 'Iniciar sesión'}
+                    </button>
+
+                    <div className="text-center text-sm text-slate-400">
+                      {isRegister ? (
+                        <>
+                          ¿Ya tienes cuenta?{' '}
+                          <button
+                            type="button"
+                            onClick={() => setIsRegister(false)}
+                            className="text-blue-400 hover:underline"
+                          >
+                            Inicia sesión
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          ¿No tienes cuenta?{' '}
+                          <button
+                            type="button"
+                            onClick={() => setIsRegister(true)}
+                            className="text-blue-400 hover:underline"
+                          >
+                            Regístrate
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </form>
+                ) : (
+                  <div className="text-center py-6">
+                    <User size={48} className="mx-auto text-slate-500 mb-4" />
+                    <h3 className="text-lg font-medium text-white mb-2">Inicia sesión</h3>
+                    <p className="text-sm text-slate-400 mb-4">
+                      Accede a tu cuenta para usar Murmullo sin necesidad de API keys propias.
+                    </p>
+                    <button
+                      onClick={() => setShowLoginForm(true)}
+                      className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-medium transition-colors"
+                    >
+                      Iniciar sesión
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Offline mode info */}
+            {!backendMode && (
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                <h3 className="font-medium text-amber-400 mb-2">Modo offline activo</h3>
+                <p className="text-sm text-slate-300">
+                  En este modo, debes configurar tus propias API keys en la pestaña "API Keys".
+                  Las transcripciones se procesan directamente desde tu computadora.
+                </p>
+              </div>
+            )}
           </div>
         );
 
@@ -1176,6 +1563,20 @@ function ControlPanel() {
               General
             </button>
             <button
+              onClick={() => setActiveTab(TABS.ACCOUNT)}
+              className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
+                activeTab === TABS.ACCOUNT
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              {backendMode ? <Cloud size={18} /> : <CloudOff size={18} />}
+              Cuenta
+              {backendMode && backendStatus === 'online' && (
+                <span className="ml-auto w-2 h-2 bg-green-500 rounded-full"></span>
+              )}
+            </button>
+            <button
               onClick={() => setActiveTab(TABS.API_KEYS)}
               className={`w-full flex items-center gap-3 px-4 py-2 rounded-lg transition-colors ${
                 activeTab === TABS.API_KEYS
@@ -1267,6 +1668,7 @@ function ControlPanel() {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

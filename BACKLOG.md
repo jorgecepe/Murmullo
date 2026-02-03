@@ -57,13 +57,27 @@ Ver plan completo en: `~/.claude/plans/curious-seeking-porcupine.md`
 - [x] Documentación API - README.md con endpoints
 
 ### Fase 4: Monetización
-- Integrar Stripe
-- Implementar planes
+- [ ] Integrar Stripe
+- [ ] Implementar planes (Free/Pro/Business)
+- [ ] Dashboard de facturación
 
-### Fase 5: Pulido
-- Auto-updates
-- Onboarding
-- Documentación
+### Fase 5: Conectar Electron a Backend ✅ COMPLETADA
+- [x] API client para comunicación con backend - `src/services/apiClient.js`
+- [x] Backend mode handlers en main.js - Routing de transcripción por backend
+- [x] Persistencia de tokens JWT en config.json
+- [x] IPC handlers para backend - login, register, logout, getMe, getUsage
+- [x] UI de cuenta en ControlPanel - Toggle backend mode, login inline, uso
+- [x] Preload.js actualizado con nuevos handlers
 
-### Fase 6: Android (opcional)
-- React Native
+### Fase 6: Pulido
+- [ ] Auto-updates con electron-updater
+- [ ] Onboarding mejorado
+- [ ] Documentación de usuario
+
+### Fase 7: Deploy Backend
+- [ ] Configurar Render/Railway
+- [ ] Variables de entorno en producción
+- [ ] Dominio y SSL
+
+### Fase 8: Android (opcional)
+- [ ] React Native app

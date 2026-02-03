@@ -207,6 +207,186 @@ let dbPath = null;
 let currentHotkey = 'CommandOrControl+Shift+Space'; // Default hotkey, can be changed by user
 let secureStorage = null; // Initialized after app is ready
 
+// Backend mode settings
+let backendMode = false;
+let backendUrl = 'http://localhost:3000';
+let backendAccessToken = null;
+let backendRefreshToken = null;
+
+// ==========================================
+// BACKEND API HELPERS
+// ==========================================
+
+// Load backend settings from config file
+function loadBackendSettings() {
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      backendMode = config.backendMode || false;
+      backendUrl = config.backendUrl || 'http://localhost:3000';
+      backendAccessToken = config.backendAccessToken || null;
+      backendRefreshToken = config.backendRefreshToken || null;
+      log('Backend settings loaded:', { backendMode, backendUrl, hasToken: !!backendAccessToken });
+    }
+  } catch (err) {
+    log('No backend settings found, using defaults');
+  }
+}
+
+// Save backend settings to config file
+function saveBackendSettings() {
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    let config = {};
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    }
+    config.backendMode = backendMode;
+    config.backendUrl = backendUrl;
+    config.backendAccessToken = backendAccessToken;
+    config.backendRefreshToken = backendRefreshToken;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    log('Backend settings saved');
+  } catch (err) {
+    logError('Failed to save backend settings:', err);
+  }
+}
+
+// Make authenticated request to backend
+async function backendRequest(endpoint, options = {}) {
+  const url = `${backendUrl}${endpoint}`;
+
+  const headers = {
+    'Content-Type': 'application/json',
+    ...options.headers
+  };
+
+  if (backendAccessToken) {
+    headers['Authorization'] = `Bearer ${backendAccessToken}`;
+  }
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers
+    });
+
+    // Handle 401 - try to refresh token
+    if (response.status === 401 && backendRefreshToken) {
+      const refreshed = await refreshBackendToken();
+      if (refreshed) {
+        // Retry with new token
+        headers['Authorization'] = `Bearer ${backendAccessToken}`;
+        const retryResponse = await fetch(url, { ...options, headers });
+        return handleBackendResponse(retryResponse);
+      }
+    }
+
+    return handleBackendResponse(response);
+  } catch (error) {
+    logError('Backend request failed:', error.message);
+    throw new Error(`Backend error: ${error.message}`);
+  }
+}
+
+// Handle backend API response
+async function handleBackendResponse(response) {
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(data.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+
+  return data;
+}
+
+// Refresh backend access token
+async function refreshBackendToken() {
+  try {
+    const response = await fetch(`${backendUrl}/api/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: backendRefreshToken })
+    });
+
+    if (!response.ok) {
+      backendAccessToken = null;
+      backendRefreshToken = null;
+      saveBackendSettings();
+      return false;
+    }
+
+    const data = await response.json();
+    backendAccessToken = data.tokens.accessToken;
+    backendRefreshToken = data.tokens.refreshToken;
+    saveBackendSettings();
+    return true;
+  } catch (error) {
+    backendAccessToken = null;
+    backendRefreshToken = null;
+    saveBackendSettings();
+    return false;
+  }
+}
+
+// Transcribe via backend
+async function transcribeViaBackend(audioData, options = {}) {
+  log('Transcribing via backend...');
+
+  // Convert to base64
+  const base64Audio = Buffer.from(audioData).toString('base64');
+
+  const data = await backendRequest('/api/v1/transcription', {
+    method: 'POST',
+    body: JSON.stringify({
+      audio: base64Audio,
+      language: options.language || 'es',
+      model: 'whisper-1'
+    })
+  });
+
+  return data;
+}
+
+// Process text via backend
+async function processTextViaBackend(text, options = {}) {
+  log('Processing text via backend...');
+
+  const data = await backendRequest('/api/v1/ai/process', {
+    method: 'POST',
+    body: JSON.stringify({
+      text,
+      provider: options.provider || 'anthropic',
+      model: options.model
+    })
+  });
+
+  return data;
+}
+
+// Combined transcribe and process via backend
+async function transcribeAndProcessViaBackend(audioData, options = {}) {
+  log('Transcribe and process via backend...');
+
+  const base64Audio = Buffer.from(audioData).toString('base64');
+
+  const data = await backendRequest('/api/v1/ai/transcribe-and-process', {
+    method: 'POST',
+    body: JSON.stringify({
+      audio: base64Audio,
+      language: options.language || 'es',
+      provider: options.provider || 'anthropic',
+      skipProcessing: options.skipProcessing || false
+    })
+  });
+
+  return data;
+}
+
 const isDev = !app.isPackaged;
 const VITE_DEV_SERVER_URL = 'http://localhost:5174';
 
@@ -519,6 +699,35 @@ function setupIpcHandlers() {
     log('=== TRANSCRIBE AUDIO START ===');
     log('Audio data length:', audioData?.length || 0);
     log('Options:', JSON.stringify({ language: options?.language }));
+    log('Backend mode:', backendMode, 'Has token:', !!backendAccessToken);
+
+    // If backend mode is enabled and user is authenticated, use backend
+    if (backendMode && backendAccessToken) {
+      try {
+        const startTime = Date.now();
+        const result = await transcribeViaBackend(audioData, options);
+        const elapsedTime = Date.now() - startTime;
+
+        // Apply list formatting
+        let formattedText = formatNumberedLists(result.text);
+
+        log('=== BACKEND TRANSCRIBE SUCCESS ===');
+        log('Words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
+        log(`Backend latency: ${elapsedTime}ms`);
+
+        logAction('TRANSCRIPTION_COMPLETE_BACKEND', {
+          wordCount: formattedText.split(/\s+/).length,
+          latencyMs: elapsedTime,
+          audioSizeKB: Math.round(audioData.length / 1024)
+        });
+
+        return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true };
+      } catch (error) {
+        logError('Backend transcription failed:', error.message);
+        // If backend fails, we could fall back to local mode, but for now return error
+        return { success: false, error: `Backend error: ${error.message}` };
+      }
+    }
 
     try {
       // Get API key from secure storage, then options, then env
@@ -792,6 +1001,32 @@ function setupIpcHandlers() {
     log('=== PROCESS TEXT START ===');
     log('Input length:', sanitizedText?.length || 0, 'words:', sanitizedText?.split(/\s+/).length || 0);
     log('Options:', JSON.stringify({ provider: options?.provider, model: options?.model }));
+    log('Backend mode:', backendMode, 'Has token:', !!backendAccessToken);
+
+    // If backend mode is enabled and user is authenticated, use backend
+    if (backendMode && backendAccessToken) {
+      try {
+        const startTime = Date.now();
+        const result = await processTextViaBackend(sanitizedText, options);
+        const aiLatency = Date.now() - startTime;
+
+        log('=== BACKEND PROCESS TEXT SUCCESS ===');
+        log('Output words:', result.text.split(/\s+/).length);
+        log(`Backend AI latency: ${aiLatency}ms`);
+
+        logAction('AI_PROCESSING_COMPLETE_BACKEND', {
+          provider: options?.provider || 'anthropic',
+          inputWords: sanitizedText.split(/\s+/).length,
+          outputWords: result.text.split(/\s+/).length,
+          latencyMs: aiLatency
+        });
+
+        return { success: true, text: result.text, latencyMs: aiLatency, viaBackend: true };
+      } catch (error) {
+        logError('Backend text processing failed:', error.message);
+        return { success: false, error: `Backend error: ${error.message}` };
+      }
+    }
 
     try {
       const provider = options?.provider || 'anthropic';
@@ -1364,6 +1599,156 @@ Output el texto completo corregido, sin comillas.`;
     ];
   });
 
+  // ==========================================
+  // BACKEND MODE HANDLERS
+  // ==========================================
+
+  // Get backend settings
+  ipcMain.handle('get-backend-settings', () => {
+    return {
+      backendMode,
+      backendUrl,
+      isAuthenticated: !!backendAccessToken
+    };
+  });
+
+  // Set backend mode
+  ipcMain.handle('set-backend-mode', (event, enabled) => {
+    log('Setting backend mode:', enabled);
+    backendMode = enabled;
+    saveBackendSettings();
+    logAction('BACKEND_MODE_CHANGED', { enabled });
+    return { success: true, backendMode };
+  });
+
+  // Set backend URL
+  ipcMain.handle('set-backend-url', (event, url) => {
+    log('Setting backend URL:', url);
+    backendUrl = url;
+    saveBackendSettings();
+    return { success: true, backendUrl };
+  });
+
+  // Check backend health
+  ipcMain.handle('check-backend-health', async () => {
+    try {
+      const response = await fetch(`${backendUrl}/health`);
+      return { online: response.ok };
+    } catch (error) {
+      return { online: false };
+    }
+  });
+
+  // Backend login
+  ipcMain.handle('backend-login', async (event, email, password) => {
+    log('Backend login attempt for:', email);
+    try {
+      const response = await fetch(`${backendUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Login failed');
+      }
+
+      backendAccessToken = data.tokens.accessToken;
+      backendRefreshToken = data.tokens.refreshToken;
+      saveBackendSettings();
+
+      logAction('BACKEND_LOGIN_SUCCESS', { email });
+      return { success: true, user: data.user };
+    } catch (error) {
+      logError('Backend login failed:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Backend register
+  ipcMain.handle('backend-register', async (event, email, password, name) => {
+    log('Backend register attempt for:', email);
+    try {
+      const response = await fetch(`${backendUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Registration failed');
+      }
+
+      backendAccessToken = data.tokens.accessToken;
+      backendRefreshToken = data.tokens.refreshToken;
+      saveBackendSettings();
+
+      logAction('BACKEND_REGISTER_SUCCESS', { email });
+      return { success: true, user: data.user };
+    } catch (error) {
+      logError('Backend register failed:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Backend logout
+  ipcMain.handle('backend-logout', async () => {
+    log('Backend logout');
+    try {
+      if (backendAccessToken && backendRefreshToken) {
+        await fetch(`${backendUrl}/api/v1/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${backendAccessToken}`
+          },
+          body: JSON.stringify({ refreshToken: backendRefreshToken })
+        });
+      }
+    } catch (error) {
+      // Ignore logout errors
+    }
+
+    backendAccessToken = null;
+    backendRefreshToken = null;
+    saveBackendSettings();
+
+    logAction('BACKEND_LOGOUT');
+    return { success: true };
+  });
+
+  // Get current user from backend
+  ipcMain.handle('backend-get-me', async () => {
+    if (!backendAccessToken) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    try {
+      const data = await backendRequest('/api/v1/auth/me');
+      return { success: true, user: data.user, limits: data.limits };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Get usage from backend
+  ipcMain.handle('backend-get-usage', async () => {
+    if (!backendAccessToken) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    try {
+      const data = await backendRequest('/api/v1/transcription/usage');
+      return { success: true, usage: data };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
   log('IPC handlers set up');
 }
 
@@ -1423,6 +1808,9 @@ app.whenReady().then(async () => {
     } catch (err) {
       log('No saved config found, using default hotkey');
     }
+
+    // Load backend settings
+    loadBackendSettings();
 
     await initDatabase();
     createMainWindow();

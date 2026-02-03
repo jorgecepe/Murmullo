@@ -19,11 +19,12 @@ global.window.electronAPI = {
   getSetting: vi.fn(),
   setSetting: vi.fn(),
   getTranscriptions: vi.fn(),
+  saveTranscription: vi.fn(),
   getStats: vi.fn(),
   deleteTranscription: vi.fn(),
   clearHistory: vi.fn(),
-  openControlPanel: vi.fn(),
-  closeControlPanel: vi.fn(),
+  showControlPanel: vi.fn(),
+  hideControlPanel: vi.fn(),
   quitApp: vi.fn(),
   getApiKeys: vi.fn(),
   setApiKey: vi.fn(),
@@ -32,7 +33,26 @@ global.window.electronAPI = {
   onHotkeyChange: vi.fn(),
   onAppUpdate: vi.fn(),
   readLogFile: vi.fn(),
-  getLogFiles: vi.fn()
+  listLogFiles: vi.fn(),
+  getLogsPath: vi.fn(),
+  exportLogs: vi.fn(),
+  openLogsFolder: vi.fn(),
+  clearOldLogs: vi.fn(),
+  getAppVersion: vi.fn(),
+  getAppInfo: vi.fn(),
+  getHotkey: vi.fn(),
+  setHotkey: vi.fn(),
+  getAvailableHotkeys: vi.fn(),
+  // Backend mode handlers
+  getBackendSettings: vi.fn().mockResolvedValue({ backendMode: false, backendUrl: 'http://localhost:3000', isAuthenticated: false }),
+  setBackendMode: vi.fn().mockResolvedValue({ success: true }),
+  setBackendUrl: vi.fn().mockResolvedValue({ success: true }),
+  checkBackendHealth: vi.fn().mockResolvedValue({ online: false }),
+  backendLogin: vi.fn(),
+  backendRegister: vi.fn(),
+  backendLogout: vi.fn().mockResolvedValue({ success: true }),
+  backendGetMe: vi.fn().mockResolvedValue({ success: false }),
+  backendGetUsage: vi.fn().mockResolvedValue({ success: false })
 };
 
 // Mock localStorage
