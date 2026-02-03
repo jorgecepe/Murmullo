@@ -95,7 +95,8 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Murmullo",
       "installerLanguages": ["es-ES", "en-US"],
-      "language": "1034"
+      "language": "1034",
+      "include": "build/installer.nsh"
     },
     "portable": {
       "artifactName": "Murmullo-Portable-${version}.exe"
