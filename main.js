@@ -250,9 +250,7 @@ async function warmupBackend() {
     return;
   }
 
-  // Normalize URL: remove trailing slashes
-  const normalizedUrl = backendUrl.replace(/\/+$/, '');
-  const healthUrl = `${normalizedUrl}/health`;
+  const healthUrl = `${getBackendUrl()}/health`;
 
   log('Sending warmup ping to backend:', healthUrl);
   try {
@@ -344,7 +342,7 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
 
 // Make authenticated request to backend
 async function backendRequest(endpoint, options = {}) {
-  const url = `${backendUrl}${endpoint}`;
+  const url = `${getBackendUrl()}${endpoint}`;
 
   const headers = {
     'Content-Type': 'application/json',
@@ -1830,9 +1828,7 @@ Output el texto completo corregido, sin comillas.`;
 
   // Check backend health
   ipcMain.handle('check-backend-health', async () => {
-    // Normalize URL before use
-    const normalizedUrl = backendUrl.replace(/\/+$/, '');
-    const healthUrl = `${normalizedUrl}/health`;
+    const healthUrl = `${getBackendUrl()}/health`;
     log('Checking backend health at:', healthUrl);
     try {
       const controller = new AbortController();
