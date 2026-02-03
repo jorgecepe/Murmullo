@@ -24,8 +24,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showControlPanel: () => ipcRenderer.invoke('show-control-panel'),
   hideControlPanel: () => ipcRenderer.invoke('hide-control-panel'),
 
-  // API Keys
+  // API Keys (secure storage)
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
+  setApiKey: (provider, key) => ipcRenderer.invoke('set-api-key', provider, key),
+  checkEncryption: () => ipcRenderer.invoke('check-encryption'),
 
   // Logs
   getLogsPath: () => ipcRenderer.invoke('get-logs-path'),

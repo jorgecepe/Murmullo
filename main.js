@@ -1,7 +1,8 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
+const SecureStorage = require('./secureStorage');
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
@@ -136,6 +137,14 @@ function formatNumberedLists(text) {
   return formatted;
 }
 
+// Helper function to mask API keys for display
+function maskApiKey(key) {
+  if (!key || key.length < 10) return key ? '****' : '';
+  const prefix = key.substring(0, 7);
+  const suffix = key.substring(key.length - 4);
+  return `${prefix}...${suffix}`;
+}
+
 // Prevent multiple instances
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -148,6 +157,7 @@ let tray = null;
 let db = null;
 let dbPath = null;
 let currentHotkey = 'CommandOrControl+Shift+Space'; // Default hotkey, can be changed by user
+let secureStorage = null; // Initialized after app is ready
 
 const isDev = !app.isPackaged;
 const VITE_DEV_SERVER_URL = 'http://localhost:5174';
@@ -438,11 +448,11 @@ function setupIpcHandlers() {
     log('Options:', JSON.stringify(options || {}));
 
     try {
-      // Get API key from options (sent from renderer's localStorage) or env
-      const apiKey = options?.apiKey || process.env.OPENAI_API_KEY;
+      // Get API key from secure storage, then options, then env
+      const apiKey = secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY;
       log('API key present:', !!apiKey);
       log('API key length:', apiKey?.length || 0);
-      log('API key prefix:', apiKey?.substring(0, 10) + '...');
+      // Don't log API key prefix for security
 
       if (!apiKey) {
         throw new Error('OpenAI API key not configured. Please add it in Settings.');
@@ -737,7 +747,7 @@ Output el texto completo corregido, sin comillas.`;
       const aiStartTime = Date.now();
 
       if (provider === 'anthropic') {
-        apiKey = options?.anthropicKey || process.env.ANTHROPIC_API_KEY;
+        apiKey = secureStorage?.getSecure('anthropic_api_key') || options?.anthropicKey || process.env.ANTHROPIC_API_KEY;
         log('Using Anthropic, API key present:', !!apiKey);
 
         if (!apiKey) throw new Error('Anthropic API key not configured');
@@ -791,7 +801,7 @@ Output el texto completo corregido, sin comillas.`;
         return { success: true, text: processedText, latencyMs: aiLatency };
 
       } else if (provider === 'openai') {
-        apiKey = options?.apiKey || process.env.OPENAI_API_KEY;
+        apiKey = secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY;
         log('Using OpenAI, API key present:', !!apiKey);
 
         if (!apiKey) throw new Error('OpenAI API key not configured');
@@ -972,12 +982,51 @@ Output el texto completo corregido, sin comillas.`;
     controlPanel?.hide();
   });
 
-  // API Keys - return from env
+  // API Keys - get from secure storage (or env as fallback)
   ipcMain.handle('get-api-keys', () => {
-    log('Getting API keys from env');
+    log('Getting API keys');
+    // Try secure storage first, then env as fallback
+    const openaiKey = secureStorage?.getSecure('openai_api_key') || process.env.OPENAI_API_KEY || '';
+    const anthropicKey = secureStorage?.getSecure('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '';
+
     return {
-      openai: process.env.OPENAI_API_KEY || '',
-      anthropic: process.env.ANTHROPIC_API_KEY || ''
+      openai: openaiKey,
+      anthropic: anthropicKey,
+      // Include masked versions for UI display
+      openaiMasked: openaiKey ? maskApiKey(openaiKey) : '',
+      anthropicMasked: anthropicKey ? maskApiKey(anthropicKey) : ''
+    };
+  });
+
+  // Save API key securely
+  ipcMain.handle('set-api-key', (event, provider, key) => {
+    log('Setting API key for:', provider);
+    if (!secureStorage) {
+      logError('Secure storage not initialized');
+      return { success: false, error: 'Secure storage not available' };
+    }
+
+    try {
+      const storageKey = provider === 'openai' ? 'openai_api_key' : 'anthropic_api_key';
+      const success = secureStorage.setSecure(storageKey, key);
+
+      if (success) {
+        logAction('API_KEY_UPDATED', { provider, hasKey: !!key });
+        return { success: true, masked: key ? maskApiKey(key) : '' };
+      } else {
+        return { success: false, error: 'Failed to save key' };
+      }
+    } catch (err) {
+      logError('Failed to set API key:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Check if encryption is available
+  ipcMain.handle('check-encryption', () => {
+    return {
+      available: secureStorage?.isEncryptionAvailable() || false,
+      platform: process.platform
     };
   });
 
@@ -1209,7 +1258,12 @@ app.whenReady().then(async () => {
     initLogging();
     logInfo('App ready, starting initialization...');
 
-    // Load .env file if exists
+    // Initialize secure storage for API keys
+    const secureStoragePath = path.join(app.getPath('userData'), 'secure-keys.json');
+    secureStorage = new SecureStorage(secureStoragePath);
+    log('Secure storage initialized, encryption available:', secureStorage.isEncryptionAvailable());
+
+    // Load .env file if exists (for development/migration only)
     const envPath = path.join(__dirname, '.env');
     log('Looking for .env at:', envPath);
 

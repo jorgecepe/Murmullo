@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 const TABS = {
   GENERAL: 'general',
@@ -31,8 +31,12 @@ function ControlPanel() {
   });
   const [apiKeys, setApiKeys] = useState({
     openai: '',
-    anthropic: ''
+    anthropic: '',
+    openaiMasked: '',
+    anthropicMasked: ''
   });
+  const [encryptionStatus, setEncryptionStatus] = useState({ available: false, platform: '' });
+  const [apiKeySaveStatus, setApiKeySaveStatus] = useState({ openai: '', anthropic: '' });
   const [history, setHistory] = useState([]);
   const [saved, setSaved] = useState(false);
   const [logFiles, setLogFiles] = useState([]);
@@ -54,12 +58,26 @@ function ControlPanel() {
     };
     setSettings(loadedSettings);
 
-    // Load API keys
-    const loadedKeys = {
-      openai: localStorage.getItem('openaiKey') || '',
-      anthropic: localStorage.getItem('anthropicKey') || ''
-    };
-    setApiKeys(loadedKeys);
+    // Load API keys from secure storage
+    if (window.electronAPI?.getApiKeys) {
+      window.electronAPI.getApiKeys().then(keys => {
+        setApiKeys({
+          openai: '', // Don't store actual keys in state
+          anthropic: '',
+          openaiMasked: keys.openaiMasked || '',
+          anthropicMasked: keys.anthropicMasked || '',
+          openaiHasKey: !!keys.openai,
+          anthropicHasKey: !!keys.anthropic
+        });
+      });
+    }
+
+    // Check encryption status
+    if (window.electronAPI?.checkEncryption) {
+      window.electronAPI.checkEncryption().then(status => {
+        setEncryptionStatus(status);
+      });
+    }
 
     // Load history
     loadHistory();
@@ -406,33 +424,158 @@ function ControlPanel() {
       case TABS.API_KEYS:
         return (
           <div className="space-y-6">
+            {/* Encryption status indicator */}
+            <div className={`p-4 rounded-lg flex items-center gap-3 ${
+              encryptionStatus.available
+                ? 'bg-green-500/10 border border-green-500/30'
+                : 'bg-amber-500/10 border border-amber-500/30'
+            }`}>
+              {encryptionStatus.available ? (
+                <>
+                  <ShieldCheck className="text-green-400" size={24} />
+                  <div>
+                    <p className="text-sm font-medium text-green-400">Almacenamiento seguro activo</p>
+                    <p className="text-xs text-slate-400">Las API keys están cifradas con la protección del sistema operativo.</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <ShieldAlert className="text-amber-400" size={24} />
+                  <div>
+                    <p className="text-sm font-medium text-amber-400">Cifrado no disponible</p>
+                    <p className="text-xs text-slate-400">Las keys se almacenan con protección básica. Considera actualizar tu sistema.</p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* OpenAI API Key */}
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">
                 OpenAI API Key
               </label>
-              <input
-                type="password"
-                value={apiKeys.openai}
-                onChange={(e) => handleApiKeyChange('openai', e.target.value)}
-                placeholder="sk-..."
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {apiKeys.openaiHasKey ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-slate-400 font-mono text-sm">
+                    {apiKeys.openaiMasked || '••••••••'}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey) {
+                        await window.electronAPI.setApiKey('openai', '');
+                        setApiKeys(prev => ({ ...prev, openaiHasKey: false, openaiMasked: '' }));
+                        setApiKeySaveStatus(prev => ({ ...prev, openai: 'removed' }));
+                        setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, openai: '' })), 2000);
+                      }
+                    }}
+                    className="bg-red-500/20 hover:bg-red-500/30 text-red-400 px-3 py-2 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={apiKeys.openai}
+                    onChange={(e) => handleApiKeyChange('openai', e.target.value)}
+                    placeholder="sk-..."
+                    className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey && apiKeys.openai) {
+                        const result = await window.electronAPI.setApiKey('openai', apiKeys.openai);
+                        if (result.success) {
+                          setApiKeys(prev => ({
+                            ...prev,
+                            openai: '',
+                            openaiHasKey: true,
+                            openaiMasked: result.masked
+                          }));
+                          setApiKeySaveStatus(prev => ({ ...prev, openai: 'saved' }));
+                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, openai: '' })), 2000);
+                        }
+                      }
+                    }}
+                    disabled={!apiKeys.openai}
+                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    <Shield size={18} />
+                  </button>
+                </div>
+              )}
+              {apiKeySaveStatus.openai && (
+                <p className={`mt-1 text-xs ${apiKeySaveStatus.openai === 'saved' ? 'text-green-400' : 'text-red-400'}`}>
+                  {apiKeySaveStatus.openai === 'saved' ? 'Key guardada de forma segura' : 'Key eliminada'}
+                </p>
+              )}
               <p className="mt-1 text-xs text-slate-400">
                 Necesario para transcripción con Whisper y procesamiento con GPT.
               </p>
             </div>
 
+            {/* Anthropic API Key */}
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">
                 Anthropic API Key
               </label>
-              <input
-                type="password"
-                value={apiKeys.anthropic}
-                onChange={(e) => handleApiKeyChange('anthropic', e.target.value)}
-                placeholder="sk-ant-..."
-                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {apiKeys.anthropicHasKey ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-slate-400 font-mono text-sm">
+                    {apiKeys.anthropicMasked || '••••••••'}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey) {
+                        await window.electronAPI.setApiKey('anthropic', '');
+                        setApiKeys(prev => ({ ...prev, anthropicHasKey: false, anthropicMasked: '' }));
+                        setApiKeySaveStatus(prev => ({ ...prev, anthropic: 'removed' }));
+                        setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, anthropic: '' })), 2000);
+                      }
+                    }}
+                    className="bg-red-500/20 hover:bg-red-500/30 text-red-400 px-3 py-2 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={apiKeys.anthropic}
+                    onChange={(e) => handleApiKeyChange('anthropic', e.target.value)}
+                    placeholder="sk-ant-..."
+                    className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey && apiKeys.anthropic) {
+                        const result = await window.electronAPI.setApiKey('anthropic', apiKeys.anthropic);
+                        if (result.success) {
+                          setApiKeys(prev => ({
+                            ...prev,
+                            anthropic: '',
+                            anthropicHasKey: true,
+                            anthropicMasked: result.masked
+                          }));
+                          setApiKeySaveStatus(prev => ({ ...prev, anthropic: 'saved' }));
+                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, anthropic: '' })), 2000);
+                        }
+                      }
+                    }}
+                    disabled={!apiKeys.anthropic}
+                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    <Shield size={18} />
+                  </button>
+                </div>
+              )}
+              {apiKeySaveStatus.anthropic && (
+                <p className={`mt-1 text-xs ${apiKeySaveStatus.anthropic === 'saved' ? 'text-green-400' : 'text-red-400'}`}>
+                  {apiKeySaveStatus.anthropic === 'saved' ? 'Key guardada de forma segura' : 'Key eliminada'}
+                </p>
+              )}
               <p className="mt-1 text-xs text-slate-400">
                 Necesario para procesamiento con Claude (recomendado para español).
               </p>
@@ -444,6 +587,18 @@ function ControlPanel() {
                 <li>• OpenAI: <a href="https://platform.openai.com/api-keys" className="text-blue-400 hover:underline" target="_blank" rel="noopener">platform.openai.com/api-keys</a></li>
                 <li>• Anthropic: <a href="https://console.anthropic.com" className="text-blue-400 hover:underline" target="_blank" rel="noopener">console.anthropic.com</a></li>
               </ul>
+            </div>
+
+            <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <h4 className="text-sm font-medium text-blue-400 mb-2 flex items-center gap-2">
+                <Shield size={16} />
+                Seguridad de las API Keys
+              </h4>
+              <p className="text-xs text-slate-400">
+                Tus API keys se almacenan de forma cifrada usando la protección del sistema operativo
+                (Windows Credential Manager, macOS Keychain, o Linux Secret Service).
+                Las keys nunca se guardan en texto plano ni se envían a servidores externos.
+              </p>
             </div>
           </div>
         );

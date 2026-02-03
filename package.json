@@ -53,13 +53,7 @@
       "!node_modules/**/*.md",
       "!node_modules/**/test/**"
     ],
-    "extraResources": [
-      {
-        "from": ".env",
-        "to": ".env",
-        "filter": ["**/*"]
-      }
-    ],
+    "extraResources": [],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**/*"
     ],
