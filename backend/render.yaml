@@ -1,0 +1,35 @@
+# Render Blueprint for Murmullo Backend
+# Deploy using: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: murmullo-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: murmullo-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: true
+
+databases:
+  - name: murmullo-db
+    plan: free
+    databaseName: murmullo
+    user: murmullo_user
