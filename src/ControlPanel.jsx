@@ -168,6 +168,8 @@ function ControlPanel() {
     await window.electronAPI?.setBackendMode(enabled);
 
     if (enabled) {
+      // Also save the current URL when enabling
+      await window.electronAPI?.setBackendUrl(backendUrl);
       await checkBackendAndLoadUser();
     } else {
       setBackendStatus('offline');

@@ -161,8 +161,8 @@ function setupContentSecurityPolicy() {
     "img-src 'self' data: blob:",
     // Fonts: self only
     "font-src 'self'",
-    // Connections: self + API endpoints
-    "connect-src 'self' https://api.openai.com https://api.anthropic.com" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
+    // Connections: self + API endpoints + Murmullo backend
+    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://murmullo-api.onrender.com" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
     // Media: self for audio recording
     "media-src 'self' blob:",
     // Workers: self
@@ -1614,27 +1614,41 @@ Output el texto completo corregido, sin comillas.`;
 
   // Set backend mode
   ipcMain.handle('set-backend-mode', (event, enabled) => {
-    log('Setting backend mode:', enabled);
+    log('=== SET BACKEND MODE ===');
+    log('Enabled:', enabled);
     backendMode = enabled;
     saveBackendSettings();
+    log('Backend mode saved, current state:', { backendMode, backendUrl });
     logAction('BACKEND_MODE_CHANGED', { enabled });
     return { success: true, backendMode };
   });
 
   // Set backend URL
   ipcMain.handle('set-backend-url', (event, url) => {
-    log('Setting backend URL:', url);
+    log('=== SET BACKEND URL ===');
+    log('URL:', url);
     backendUrl = url;
     saveBackendSettings();
+    log('Backend URL saved');
     return { success: true, backendUrl };
   });
 
   // Check backend health
   ipcMain.handle('check-backend-health', async () => {
+    log('Checking backend health at:', backendUrl);
     try {
-      const response = await fetch(`${backendUrl}/health`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const response = await fetch(`${backendUrl}/health`, {
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+      log('Backend health response:', response.ok, response.status);
       return { online: response.ok };
     } catch (error) {
+      logError('Backend health check failed:', error.message);
       return { online: false };
     }
   });
