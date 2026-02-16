@@ -117,6 +117,7 @@
       "icon": "resources/icon.png"
     },
     "nsis": {
+      "artifactName": "Murmullo-Setup-${version}.exe",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
