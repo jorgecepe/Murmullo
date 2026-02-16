@@ -2,6 +2,8 @@
 
 **Dictado de voz inteligente para desarrolladores y profesionales hispanohablantes.**
 
+[![Descargar v1.6.0](https://img.shields.io/badge/Descargar-v1.6.0-blue?style=for-the-badge&logo=windows)](https://github.com/jorgecepe/Murmullo/releases/latest)
+
 > Fork de [Open-Whispr](https://github.com/HeroTools/open-whispr) optimizado para español con preservación de términos técnicos.
 
 [Read in English](#english) | [Documentación completa en español](./README_ES.md)
@@ -23,6 +25,7 @@ Los términos técnicos se mantienen en inglés automáticamente.
 ## Características Principales
 
 - **Español técnico**: Transcribe en español preservando terminología en inglés
+- **Diccionario personalizado**: Define tus propias palabras y reemplazos
 - **Dos modos**: Rápido (solo transcripción) o Inteligente (con corrección IA)
 - **Hotkey ergonómico**: `Ctrl+Shift+Space` por defecto (personalizable)
 - **Sin privilegios de admin**: Se instala en la carpeta del usuario
@@ -36,21 +39,19 @@ Los términos técnicos se mantienen en inglés automáticamente.
 
 ### Desde Releases (Recomendado)
 
-Descarga el instalador desde [Releases](../../releases):
-- **Windows**: `Murmullo Setup 1.4.0.exe` (instalador) o `Murmullo-Portable-1.4.0.exe` (portable)
-- **macOS**: `Murmullo-1.4.0.dmg`
-- **Linux**: `Murmullo-1.4.0.AppImage`
+Descarga el instalador desde [Releases](https://github.com/jorgecepe/Murmullo/releases/latest):
+- **Windows**: `Murmullo-Setup-1.6.0.exe` (instalador) o `Murmullo-Portable-1.6.0.exe` (portable)
 
-**Actualizaciones automáticas**: A partir de v1.4.0, Murmullo detecta y descarga actualizaciones automáticamente.
+**Actualizaciones automáticas**: Murmullo detecta y descarga actualizaciones automáticamente desde la pestaña Configuración > Actualizaciones.
 
 ### Desde el Código Fuente
 
 ```bash
-git clone https://github.com/tu-usuario/murmullo.git
+git clone https://github.com/jorgecepe/Murmullo.git
 cd murmullo
 npm install
-cp env.example .env
-# Editar .env con tus API keys
+cp .env.example .env
+# Editar .env con tus API keys (opcional si usas modo backend)
 npm run dev
 ```
 
@@ -127,10 +128,10 @@ Open-Whispr is excellent, but:
 
 ### Installation
 
-Download from [Releases](../../releases) or build from source:
+Download from [Releases](https://github.com/jorgecepe/Murmullo/releases/latest) or build from source:
 
 ```bash
-git clone https://github.com/your-username/murmullo.git
+git clone https://github.com/jorgecepe/Murmullo.git
 cd murmullo
 npm install
 npm run dev
