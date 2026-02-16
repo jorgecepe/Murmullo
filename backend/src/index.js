@@ -14,6 +14,7 @@ import transcriptionRoutes from './routes/transcription.js';
 import aiRoutes from './routes/ai.js';
 import userRoutes from './routes/user.js';
 import healthRoutes from './routes/health.js';
+import adminRoutes from './routes/admin.js';
 
 // Load environment variables
 dotenv.config();
@@ -58,6 +59,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/transcription', transcriptionRoutes);
 app.use('/api/v1/ai', aiRoutes);
 app.use('/api/v1/user', userRoutes);
+app.use('/api/v1/admin', adminRoutes);
 
 // 404 handler
 app.use((req, res) => {
