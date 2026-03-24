@@ -104,7 +104,7 @@ function ControlPanel() {
 
   // Backend/Online mode state
   const [backendMode, setBackendMode] = useState(false);
-  const [backendUrl, setBackendUrl] = useState('http://localhost:3000');
+  const [backendUrl, setBackendUrl] = useState('https://murmullo-api.luminaconsulting.ai');
   const [backendStatus, setBackendStatus] = useState('checking'); // 'checking', 'online', 'offline'
   const [user, setUser] = useState(null);
   const [showLoginForm, setShowLoginForm] = useState(false);

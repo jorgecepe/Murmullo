@@ -261,7 +261,7 @@ function setupContentSecurityPolicy() {
     // Fonts: self only
     "font-src 'self'",
     // Connections: self + API endpoints + Murmullo backend
-    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://murmullo-api.onrender.com" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
+    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://murmullo-api.luminaconsulting.ai" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
     // Media: self for audio recording
     "media-src 'self' blob:",
     // Workers: self
@@ -316,7 +316,7 @@ let secureStorage = null; // Initialized after app is ready
 
 // Backend mode settings
 let backendMode = false;
-let backendUrl = 'http://localhost:3000';
+let backendUrl = 'https://murmullo-api.luminaconsulting.ai';
 let backendAccessToken = null;
 let backendRefreshToken = null;
 
@@ -447,7 +447,7 @@ function loadBackendSettings() {
     if (fs.existsSync(configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       backendMode = config.backendMode || false;
-      backendUrl = config.backendUrl || 'http://localhost:3000';
+      backendUrl = config.backendUrl || 'https://murmullo-api.luminaconsulting.ai';
       backendAccessToken = config.backendAccessToken || null;
       backendRefreshToken = config.backendRefreshToken || null;
       debugAudioEnabled = config.debugAudioEnabled || false;
