@@ -34,7 +34,9 @@ export async function transcribeAudio(audioBuffer, options = {}) {
       contentType: 'audio/wav'
     });
     formData.append('model', model);
-    formData.append('language', language);
+    if (language && language !== 'auto') {
+      formData.append('language', language);
+    }
     formData.append('response_format', responseFormat);
     // Prompt helps anchor Whisper and reduce hallucinations
     if (prompt) {

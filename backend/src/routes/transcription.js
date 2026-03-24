@@ -25,7 +25,7 @@ router.post('/',
   transcriptionLimiter,
   [
     body('audio').notEmpty().withMessage('Audio data is required'),
-    body('language').optional().isIn(['es', 'en', 'pt', 'fr', 'de']).withMessage('Invalid language'),
+    body('language').optional().isIn(['auto', 'es', 'en', 'pt', 'fr', 'de']).withMessage('Invalid language'),
     body('model').optional().isIn(['whisper-1']).withMessage('Invalid model')
   ],
   async (req, res, next) => {
