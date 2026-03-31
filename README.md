@@ -2,7 +2,7 @@
 
 **Dictado de voz inteligente para desarrolladores y profesionales hispanohablantes.**
 
-[![Descargar v1.6.0](https://img.shields.io/badge/Descargar-v1.6.0-blue?style=for-the-badge&logo=windows)](https://github.com/jorgecepe/Murmullo/releases/latest)
+[![Descargar v1.7.0](https://img.shields.io/badge/Descargar-v1.7.0-blue?style=for-the-badge&logo=windows)](https://github.com/jorgecepe/Murmullo/releases/latest)
 
 > Fork de [Open-Whispr](https://github.com/HeroTools/open-whispr) optimizado para español con preservación de términos técnicos.
 
@@ -40,7 +40,7 @@ Los términos técnicos se mantienen en inglés automáticamente.
 ### Desde Releases (Recomendado)
 
 Descarga el instalador desde [Releases](https://github.com/jorgecepe/Murmullo/releases/latest):
-- **Windows**: `Murmullo-Setup-1.6.0.exe` (instalador) o `Murmullo-Portable-1.6.0.exe` (portable)
+- **Windows**: `Murmullo-Setup-1.7.0.exe` (instalador) o `Murmullo-Portable-1.7.0.exe` (portable)
 
 **Actualizaciones automáticas**: Murmullo detecta y descarga actualizaciones automáticamente desde la pestaña Configuración > Actualizaciones.
 

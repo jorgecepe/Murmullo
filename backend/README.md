@@ -90,6 +90,14 @@ npm start
 | GET | `/api/v1/user/subscription` | Get subscription |
 | DELETE | `/api/v1/user/account` | Delete account |
 
+### Admin
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/admin/set-plan` | Set user plan (requires `X-Admin-Secret` header) |
+| POST | `/api/v1/admin/reset-usage` | Reset monthly usage for a user |
+| GET | `/api/v1/admin/users` | List all users |
+
 ### Health
 
 | Method | Endpoint | Description |
@@ -101,54 +109,39 @@ npm start
 
 | Plan | Minutes/Month | Price |
 |------|---------------|-------|
-| Free | 30 | $0 |
+| Free | 120 | $0 |
 | Pro | 300 | $9.99 |
 | Business | Unlimited | $24.99 |
 
 ## Deployment
 
-### Render (Recommended)
+### Self-hosted VPS with Docker (Current)
 
-**Option 1: Using Blueprint (Easiest)**
+Murmullo backend runs on a Hetzner VPS using Docker containers.
+
+```bash
+# Build and run the API container
+docker build -t murmullo-api ./backend
+docker run -d \
+  --name murmullo-api \
+  --env-file ./backend/.env \
+  -p 127.0.0.1:3001:3001 \
+  --restart unless-stopped \
+  murmullo-api
+
+# PostgreSQL runs in a separate container
+# Connect via DATABASE_URL in the .env
+```
+
+### Alternative: Render
 
 1. Fork or push this repo to GitHub
 2. Go to [Render Dashboard](https://dashboard.render.com)
 3. Click "New" > "Blueprint"
 4. Connect your GitHub repo and select the `backend` folder
-5. Render will read `render.yaml` and create:
-   - Web service for the API
-   - PostgreSQL database
-   - Auto-generated JWT secrets
-6. Add your API keys in the Environment section:
-   - `OPENAI_API_KEY`
-   - `ANTHROPIC_API_KEY`
-7. Deploy!
-
-**Option 2: Manual Setup**
-
-1. Create a PostgreSQL database on Render
-2. Create a new Web Service
-3. Connect GitHub repo, set root directory to `backend`
-4. Build command: `npm install`
-5. Start command: `npm start`
-6. Add environment variables (see below)
+5. Render will read `render.yaml` and create the services
+6. Add your API keys in the Environment section
 7. Deploy
-
-### Railway
-
-1. Create new project on [Railway](https://railway.app)
-2. Add PostgreSQL service
-3. Connect GitHub repo
-4. Set root directory to `backend`
-5. Add environment variables
-6. Deploy
-
-### Vercel (Serverless)
-
-Not recommended for this backend due to:
-- Long-running transcription requests
-- PostgreSQL connection pooling needs
-- WebSocket requirements for future features
 
 ## Environment Variables
 
@@ -160,6 +153,7 @@ Not recommended for this backend due to:
 | `JWT_SECRET` | JWT signing secret | Yes |
 | `OPENAI_API_KEY` | OpenAI API key | Yes |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
+| `ADMIN_SECRET` | Secret for admin endpoints | Yes |
 | `CORS_ORIGIN` | Allowed origins | No |
 
 ## Security
@@ -178,7 +172,7 @@ After deploying, update the Electron app to connect:
 1. Open Murmullo Control Panel
 2. Go to "Cuenta" (Account) tab
 3. Enable "Modo de conexión" (online mode)
-4. Enter your backend URL (e.g., `https://murmullo-api.onrender.com`)
+4. Enter your backend URL (e.g., `https://murmullo-api.luminaconsulting.ai`)
 5. Click "Conectar"
 6. Login or register an account
 
@@ -186,5 +180,5 @@ After deploying, update the Electron app to connect:
 
 ```javascript
 // In setupContentSecurityPolicy(), add your backend domain:
-"connect-src 'self' https://api.openai.com https://api.anthropic.com https://your-backend.onrender.com"
+"connect-src 'self' https://api.openai.com https://api.anthropic.com https://murmullo-api.luminaconsulting.ai"
 ```

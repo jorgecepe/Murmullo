@@ -72,7 +72,7 @@ export function checkUsageQuota(req, res, next) {
  */
 function getPlanLimit(plan) {
   const limits = {
-    free: 30,      // 30 minutes/month
+    free: 120,     // 120 minutes/month (was 30)
     pro: 300,      // 300 minutes/month (5 hours)
     business: -1   // Unlimited
   };

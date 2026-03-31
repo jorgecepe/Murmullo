@@ -130,8 +130,8 @@ router.get('/subscription', authenticate, async (req, res, next) => {
       free: {
         name: 'Free',
         price: 0,
-        minutes_limit: 30,
-        features: ['30 minutes/month', 'Basic transcription', 'Email support']
+        minutes_limit: 120,
+        features: ['120 minutes/month', 'Basic transcription', 'Email support']
       },
       pro: {
         name: 'Pro',

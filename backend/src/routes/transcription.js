@@ -108,7 +108,7 @@ router.get('/usage', authenticate, async (req, res, next) => {
     const stats = await db.getUserStats(req.user.id);
 
     const planLimits = {
-      free: 30,
+      free: 120,
       pro: 300,
       business: -1
     };
