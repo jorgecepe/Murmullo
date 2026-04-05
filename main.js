@@ -1,10 +1,18 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session, net } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session, net, powerMonitor } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const SecureStorage = require('./secureStorage');
 const { validateIpcMessage, sanitizeString } = require('./ipcValidation');
-const { autoUpdater } = require('electron-updater');
+
+// Lazy-load autoUpdater to avoid crash in dev mode (app not ready at import time)
+let autoUpdater;
+function getAutoUpdater() {
+  if (!autoUpdater) {
+    autoUpdater = require('electron-updater').autoUpdater;
+  }
+  return autoUpdater;
+}
 
 // DEBUG MODE - set to true for extensive logging
 const DEBUG = true;
@@ -805,6 +813,21 @@ function createMainWindow() {
     mainWindow = null;
   });
 
+  // Periodically ensure window visibility and alwaysOnTop (every 5 minutes)
+  // Windows can lose alwaysOnTop after sleep/wake or display changes
+  setInterval(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) {
+        mainWindow.showInactive();
+        log('Periodic check: window was hidden, restored');
+      }
+      if (!mainWindow.isAlwaysOnTop()) {
+        mainWindow.setAlwaysOnTop(true, 'floating');
+        log('Periodic check: alwaysOnTop was lost, restored');
+      }
+    }
+  }, 5 * 60 * 1000);
+
   log('Main window created');
 }
 
@@ -1011,23 +1034,24 @@ function setupAutoUpdater() {
   log('Setting up auto-updater...');
 
   // Configure auto-updater
-  autoUpdater.autoDownload = false; // Don't auto-download, let user decide
-  autoUpdater.autoInstallOnAppQuit = true;
+  const updater = getAutoUpdater();
+  updater.autoDownload = false; // Don't auto-download, let user decide
+  updater.autoInstallOnAppQuit = true;
 
   // Log auto-updater events
-  autoUpdater.logger = {
+  updater.logger = {
     info: (msg) => log('[AutoUpdater]', msg),
     warn: (msg) => log('[AutoUpdater WARN]', msg),
     error: (msg) => logError('[AutoUpdater]', msg),
     debug: (msg) => log('[AutoUpdater DEBUG]', msg)
   };
 
-  autoUpdater.on('checking-for-update', () => {
+  updater.on('checking-for-update', () => {
     log('Checking for updates...');
     sendUpdateStatus('checking');
   });
 
-  autoUpdater.on('update-available', (info) => {
+  updater.on('update-available', (info) => {
     log('Update available:', info.version);
     updateAvailable = true;
     updateInfo = info;
@@ -1035,19 +1059,19 @@ function setupAutoUpdater() {
     logAction('UPDATE_AVAILABLE', { version: info.version });
   });
 
-  autoUpdater.on('update-not-available', (info) => {
+  updater.on('update-not-available', (info) => {
     log('No update available, current version is up to date');
     updateAvailable = false;
     sendUpdateStatus('not-available');
   });
 
-  autoUpdater.on('download-progress', (progress) => {
+  updater.on('download-progress', (progress) => {
     downloadProgress = Math.round(progress.percent);
     log('Download progress:', downloadProgress + '%');
     sendUpdateStatus('downloading', { percent: downloadProgress, bytesPerSecond: progress.bytesPerSecond });
   });
 
-  autoUpdater.on('update-downloaded', (info) => {
+  updater.on('update-downloaded', (info) => {
     log('Update downloaded:', info.version);
     updateDownloaded = true;
     updateInfo = info;
@@ -1055,7 +1079,7 @@ function setupAutoUpdater() {
     logAction('UPDATE_DOWNLOADED', { version: info.version });
   });
 
-  autoUpdater.on('error', (error) => {
+  updater.on('error', (error) => {
     logError('Auto-updater error:', error.message);
     sendUpdateStatus('error', { message: error.message });
   });
@@ -1064,14 +1088,14 @@ function setupAutoUpdater() {
   if (!isDev) {
     // Initial check after a short delay
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch(err => {
+      updater.checkForUpdates().catch(err => {
         log('Update check failed:', err.message);
       });
     }, 5000);
 
     // Check periodically (every 4 hours)
     setInterval(() => {
-      autoUpdater.checkForUpdates().catch(err => {
+      updater.checkForUpdates().catch(err => {
         log('Periodic update check failed:', err.message);
       });
     }, 4 * 60 * 60 * 1000);
@@ -1657,9 +1681,23 @@ Output el texto completo corregido, sin comillas.`;
         log('Cleared clipboard (was empty before)');
       }
 
+      // Re-show the floating window after paste completes
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.showInactive();
+          mainWindow.setAlwaysOnTop(true, 'floating');
+          log('Main window restored after paste');
+        }
+      }, 500);
+
       return { success: true };
     } catch (error) {
       logError('Paste error:', error);
+      // Ensure window is restored even on error
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.showInactive();
+        mainWindow.setAlwaysOnTop(true, 'floating');
+      }
       return { success: false, error: error.message };
     }
   });
@@ -2229,7 +2267,7 @@ Output el texto completo corregido, sin comillas.`;
       return { success: false, error: 'Updates disabled in development mode' };
     }
     try {
-      const result = await autoUpdater.checkForUpdates();
+      const result = await getAutoUpdater().checkForUpdates();
       return { success: true, updateInfo: result?.updateInfo };
     } catch (error) {
       logError('Update check failed:', error.message);
@@ -2244,7 +2282,7 @@ Output el texto completo corregido, sin comillas.`;
       return { success: false, error: 'No update available' };
     }
     try {
-      await autoUpdater.downloadUpdate();
+      await getAutoUpdater().downloadUpdate();
       return { success: true };
     } catch (error) {
       logError('Download update failed:', error.message);
@@ -2260,7 +2298,7 @@ Output el texto completo corregido, sin comillas.`;
     }
     logAction('UPDATE_INSTALLING', { version: updateInfo?.version });
     // This will quit the app and install the update
-    autoUpdater.quitAndInstall(false, true);
+    getAutoUpdater().quitAndInstall(false, true);
     return { success: true };
   });
 
@@ -2666,6 +2704,16 @@ app.whenReady().then(async () => {
     registerHotkey(currentHotkey);
     setupIpcHandlers();
     setupAutoUpdater();
+
+    // Restore window visibility after system resume (sleep/wake)
+    powerMonitor.on('resume', () => {
+      log('System resumed from sleep');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.showInactive();
+        mainWindow.setAlwaysOnTop(true, 'floating');
+        log('Window restored after system resume');
+      }
+    });
 
     log('Initialization complete');
 
