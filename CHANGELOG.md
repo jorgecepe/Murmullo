@@ -7,6 +7,52 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.8.0] - 2026-04-05
+
+### Agregado
+- **Ícono arrastrable**: El indicador flotante del micrófono ahora se puede mover arrastrándolo con el mouse
+- **Recuperación de ventana**: La ventana flotante se restaura automáticamente después de cada transcripción, tras sleep/wake del sistema, y con verificación periódica cada 5 minutos
+
+### Corregido
+- **Ícono desaparecía**: La ventana flotante se ocultaba al pegar texto y nunca se restauraba, causando que el ícono desapareciera después de la primera transcripción
+- **Crash en modo dev**: `electron-updater` crasheaba al importarse antes de que Electron estuviera listo; cambiado a lazy-loading
+
+### Mejorado
+- **Plan free ampliado**: Límite del plan gratuito aumentado de 30 a 120 minutos/mes
+
+### Build
+- `Murmullo-Setup-1.8.0.exe` - Instalador NSIS con auto-update
+- `Murmullo-Portable-1.8.0.exe` - Versión portable
+
+---
+
+## [1.7.0] - 2026-03-24
+
+### Cambiado
+- **Backend migrado a Hetzner VPS**: Backend self-hosted con Docker en lugar de Render, mejor latencia y control
+- **URL de producción**: `murmullo-api.luminaconsulting.ai`
+
+### Corregido
+- **Transcripción con idioma 'auto'**: El backend ahora acepta la opción de idioma 'auto' para detección automática
+
+---
+
+## [1.6.0] - 2026-03-10
+
+### Agregado
+- **Diccionario personalizado**: Define tus propias palabras y reemplazos para la transcripción
+- **Endpoints de admin**: API para gestión de usuarios y planes (`set-plan`, `reset-usage`, `users`)
+
+---
+
+## [1.5.0] - 2026-02-15
+
+### Agregado
+- **Modo debug de audio**: Guarda archivos de audio para diagnóstico (activable desde configuración)
+- **Transcripción verbatim**: Nuevo modo de transcripción sin post-procesamiento
+
+---
+
 ## [1.4.0] - 2026-02-03
 
 ### Agregado
@@ -116,7 +162,6 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ## Próximas versiones (planificado)
 
-### [1.5.0] - Por definir
 - [ ] Integración con Groq para transcripción más rápida
 - [ ] Doble-tap de Ctrl como hotkey alternativo
 - [ ] Selección de micrófono en configuración

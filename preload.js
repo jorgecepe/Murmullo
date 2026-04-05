@@ -80,6 +80,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   testReplacement: (text) => ipcRenderer.invoke('test-replacement', text),
   updateDictionarySettings: (settings) => ipcRenderer.invoke('update-dictionary-settings', settings),
 
+  // Window drag
+  windowStartDrag: () => ipcRenderer.invoke('window-start-drag'),
+  windowDragEnd: () => ipcRenderer.invoke('window-drag-end'),
+
   // Events
   onToggleDictation: (callback) => {
     const handler = (event) => callback();

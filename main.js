@@ -1118,6 +1118,40 @@ function sendUpdateStatus(status, data = {}) {
 function setupIpcHandlers() {
   log('Setting up IPC handlers...');
 
+  // Window drag support
+  let dragStartWinPos = null;
+  let dragStartCursor = null;
+  let dragInterval = null;
+
+  ipcMain.handle('window-start-drag', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const { screen } = require('electron');
+      dragStartWinPos = mainWindow.getPosition();
+      dragStartCursor = screen.getCursorScreenPoint();
+      // Poll cursor position for smooth dragging even outside the small window
+      dragInterval = setInterval(() => {
+        if (mainWindow && !mainWindow.isDestroyed() && dragStartWinPos) {
+          const cursor = screen.getCursorScreenPoint();
+          const dx = cursor.x - dragStartCursor.x;
+          const dy = cursor.y - dragStartCursor.y;
+          mainWindow.setPosition(dragStartWinPos[0] + dx, dragStartWinPos[1] + dy);
+        }
+      }, 16); // ~60fps
+      return { success: true };
+    }
+    return { success: false };
+  });
+
+  ipcMain.handle('window-drag-end', () => {
+    if (dragInterval) {
+      clearInterval(dragInterval);
+      dragInterval = null;
+    }
+    dragStartWinPos = null;
+    dragStartCursor = null;
+    return { success: true };
+  });
+
   // Transcribe audio
   ipcMain.handle('transcribe-audio', async (event, audioData, options) => {
     // Validate input

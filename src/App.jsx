@@ -29,6 +29,7 @@ function App() {
   const streamRef = useRef(null);
   const toastTimeoutRef = useRef(null);
 
+
   // Play completion sound
   const playCompletionSound = useCallback(() => {
     try {
@@ -463,13 +464,25 @@ function App() {
 
   // Minimal floating indicator - just a small circle that shows status
   // No click needed - only responds to hotkey (Ctrl+Shift+Space)
+  const handleMouseDown = useCallback(() => {
+    window.electronAPI.windowStartDrag();
+
+    const handleMouseUp = () => {
+      window.electronAPI.windowDragEnd();
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mouseup', handleMouseUp);
+  }, []);
+
   return (
     <div className="w-[60px] h-[60px] flex flex-col items-center justify-center bg-transparent relative">
 
-      {/* Minimal status indicator */}
+      {/* Minimal status indicator - draggable */}
       <div
+        onMouseDown={handleMouseDown}
         className={`
-          w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg
+          w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-grab active:cursor-grabbing
           ${status === STATUS.IDLE ? 'bg-slate-700/90 text-slate-400' : ''}
           ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white shadow-red-500/50' : ''}
           ${status === STATUS.PROCESSING ? 'bg-blue-500 text-white shadow-blue-500/50' : ''}
@@ -477,7 +490,7 @@ function App() {
           ${status === STATUS.ERROR ? 'bg-red-600 text-white shadow-red-600/50' : ''}
         `}
         title={
-          status === STATUS.IDLE ? 'Murmullo - Ctrl+Shift+Space para grabar' :
+          status === STATUS.IDLE ? 'Murmullo - Ctrl+Shift+Space para grabar (arrastra para mover)' :
           status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
           status === STATUS.PROCESSING ? processingStage || 'Procesando...' :
           status === STATUS.SUCCESS ? 'Listo' :
