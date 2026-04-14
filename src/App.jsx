@@ -420,18 +420,6 @@ function App() {
       console.log('[App] Pasting text...');
       await window.electronAPI.pasteText(finalText);
 
-      // Stage 5: Saving
-      setProcessingStage('Guardando...');
-
-      // Save to history
-      console.log('[App] Saving to history...');
-      await window.electronAPI.saveTranscription({
-        original_text: transcriptionResult.text,
-        processed_text: finalText,
-        is_processed: settings.processingMode === 'smart',
-        processing_method: settings.processingMode === 'smart' ? settings.reasoningProvider : 'none'
-      });
-
       setLastText(finalText);
       setProcessingStage('');
       setStatus(STATUS.SUCCESS);

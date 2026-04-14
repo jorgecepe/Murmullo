@@ -813,8 +813,8 @@ function createMainWindow() {
     mainWindow = null;
   });
 
-  // Periodically ensure window visibility and alwaysOnTop (every 5 minutes)
-  // Windows can lose alwaysOnTop after sleep/wake or display changes
+  // Periodically ensure window visibility and alwaysOnTop (every 90 seconds)
+  // Windows can lose alwaysOnTop after sleep/wake, display changes, or fullscreen apps
   setInterval(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (!mainWindow.isVisible()) {
@@ -826,7 +826,7 @@ function createMainWindow() {
         log('Periodic check: alwaysOnTop was lost, restored');
       }
     }
-  }, 5 * 60 * 1000);
+  }, 90 * 1000);
 
   log('Main window created');
 }
@@ -2746,6 +2746,16 @@ app.whenReady().then(async () => {
         mainWindow.showInactive();
         mainWindow.setAlwaysOnTop(true, 'floating');
         log('Window restored after system resume');
+      }
+    });
+
+    // Restore window visibility when display metrics change (resolution, monitor add/remove, DPI)
+    const { screen } = require('electron');
+    screen.on('display-metrics-changed', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.showInactive();
+        mainWindow.setAlwaysOnTop(true, 'floating');
+        log('Window restored after display metrics changed');
       }
     });
 
