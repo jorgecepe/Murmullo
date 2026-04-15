@@ -1,5 +1,7 @@
 import React, { useState, useEffect, Component } from 'react';
 import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle, BookText, Plus, Edit3, Play, Upload } from 'lucide-react';
+import UsagePanel from './components/UsagePanel';
+import WelcomeModal from './components/WelcomeModal';
 
 // Error Boundary to catch rendering errors
 class ErrorBoundary extends Component {
@@ -148,6 +150,16 @@ function ControlPanel() {
   const [testText, setTestText] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [dictionaryLoading, setDictionaryLoading] = useState(false);
+
+  // Onboarding modal: shown once on first run (tracked in localStorage).
+  // Kept at top level so both GENERAL tab and API_KEYS can trigger replay from help.
+  const [showWelcome, setShowWelcome] = useState(() => {
+    try {
+      return localStorage.getItem('hasCompletedOnboarding') !== 'true';
+    } catch (e) {
+      return false;
+    }
+  });
 
   // Load debug audio settings
   const loadDebugAudioSettings = async () => {
@@ -692,6 +704,10 @@ function ControlPanel() {
       case TABS.GENERAL:
         return (
           <div className="space-y-6">
+            <UsagePanel
+              onGoToApiKeys={() => setActiveTab(TABS.API_KEYS)}
+              onGoToAccount={() => setActiveTab(TABS.ACCOUNT)}
+            />
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">
                 Idioma de transcripción
@@ -2356,6 +2372,11 @@ function ControlPanel() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
+      <WelcomeModal
+        open={showWelcome}
+        onComplete={() => setShowWelcome(false)}
+        onDismiss={() => setShowWelcome(false)}
+      />
       {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
         <h1 className="text-xl font-semibold">Murmullo - Configuración</h1>
