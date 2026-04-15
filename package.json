@@ -110,7 +110,7 @@
       ],
       "icon": "resources/icon.png",
       "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": true,
+      "signAndEditExecutable": false,
       "signingHashAlgorithms": ["sha256"],
       "publisherName": "Jorge Cepeda",
       "verifyUpdateCodeSignature": true

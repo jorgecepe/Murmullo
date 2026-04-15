@@ -70,7 +70,10 @@ automáticamente. Si no existen, el build sigue funcionando sin firma
 
 ## 5. Configuración en package.json
 
-Ya está aplicada en v1.9:
+La config en v1.9-beta viene con `signAndEditExecutable: false` para
+que builds locales en Windows sin privilegios de symlink (necesarios
+para extraer `winCodeSign`) funcionen. Cambia a `true` el día que
+vayas a firmar:
 
 ```json
 "win": {
@@ -80,6 +83,11 @@ Ya está aplicada en v1.9:
   "verifyUpdateCodeSignature": true
 }
 ```
+
+Alternativa si quieres mantenerlo en `true` localmente: habilita
+"Modo programador" en Windows (Settings → Privacy & security → For
+developers) o ejecuta el terminal como administrador. Esto permite la
+creación de symlinks para las herramientas de firma.
 
 Ajusta `publisherName` para que coincida exactamente con el "Subject CN"
 del certificado emitido. Si el nombre no coincide, `electron-updater`
