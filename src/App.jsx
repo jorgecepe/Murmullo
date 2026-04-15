@@ -20,6 +20,7 @@ function App() {
   const [lastText, setLastText] = useState('');
   const [processingStage, setProcessingStage] = useState(''); // Detailed progress indicator
   const [toast, setToast] = useState(null); // Toast for visible notifications
+  const [usageGate, setUsageGate] = useState(null); // { allowed, percent, secondsRemaining, ... }
   const [settings, setSettings] = useState({
     processingMode: 'smart',
     language: 'es',
@@ -145,6 +146,32 @@ function App() {
       anthropicKey: savedSettings.anthropicKey ? 'SET' : 'NOT SET'
     });
   }, []);
+
+  // Poll free-tier usage so the tooltip and status indicator can reflect the
+  // remaining minutes. Only users without backend auth and without their own
+  // API key are gated; for everyone else the response returns allowed=true
+  // with secondsRemaining=Infinity and we skip the counter.
+  useEffect(() => {
+    if (!window.electronAPI?.getUsage) return;
+    let cancelled = false;
+    const fetchUsage = async () => {
+      try {
+        const res = await window.electronAPI.getUsage();
+        if (cancelled || !res?.success) return;
+        // Hide counter when unlimited (backend/BYOK); otherwise keep the gate.
+        if (res.backendAuthenticated || res.summary?.hasOwnApiKey) {
+          setUsageGate(null);
+        } else {
+          setUsageGate(res.gate);
+        }
+      } catch (e) {
+        // Non-fatal; just skip the counter
+      }
+    };
+    fetchUsage();
+    const interval = setInterval(fetchUsage, 30_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [status]); // Re-fetch after status changes (especially post-transcription)
 
   // Handle hotkey toggle
   useEffect(() => {
@@ -514,7 +541,7 @@ function App() {
           ${status === STATUS.ERROR ? 'bg-red-600 text-white shadow-red-600/50' : ''}
         `}
         title={
-          status === STATUS.IDLE ? 'Murmullo - Ctrl+Shift+Space para grabar (arrastra para mover)' :
+          status === STATUS.IDLE ? `Murmullo - Ctrl+Shift+Space para grabar (arrastra para mover)${usageGate ? ` | ${(usageGate.secondsRemaining / 60).toFixed(1)} min restantes de prueba gratuita` : ''}` :
           status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
           status === STATUS.PROCESSING ? processingStage || 'Procesando...' :
           status === STATUS.SUCCESS ? 'Listo' :
