@@ -3,6 +3,8 @@ const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const SecureStorage = require('./secureStorage');
+const RateLimiter = require('./rateLimiter');
+const UsageTracker = require('./usageTracker');
 const { validateIpcMessage, sanitizeString } = require('./ipcValidation');
 
 // Lazy-load autoUpdater to avoid crash in dev mode (app not ready at import time)
@@ -14,8 +16,9 @@ function getAutoUpdater() {
   return autoUpdater;
 }
 
-// DEBUG MODE - set to true for extensive logging
-const DEBUG = true;
+// DEBUG MODE - enabled automatically in unpackaged (dev) builds, disabled in packaged (production) builds
+// Override with MURMULLO_DEBUG=1 env var if you need verbose logs in production.
+const DEBUG = !app.isPackaged || process.env.MURMULLO_DEBUG === '1';
 
 // Debug audio mode - saves all audio files for investigation
 // Controlled via config file 'debugAudioEnabled' setting
@@ -268,8 +271,8 @@ function setupContentSecurityPolicy() {
     "img-src 'self' data: blob:",
     // Fonts: self only
     "font-src 'self'",
-    // Connections: self + API endpoints + Murmullo backend
-    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://murmullo-api.luminaconsulting.ai" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
+    // Connections: self + API endpoints (OpenAI, Anthropic, Groq, Google) + Murmullo backend
+    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://api.groq.com https://generativelanguage.googleapis.com https://murmullo-api.luminaconsulting.ai" + (isDev ? " ws://localhost:* http://localhost:*" : ""),
     // Media: self for audio recording
     "media-src 'self' blob:",
     // Workers: self
@@ -321,6 +324,8 @@ let db = null;
 let dbPath = null;
 let currentHotkey = 'CommandOrControl+Shift+Space'; // Default hotkey, can be changed by user
 let secureStorage = null; // Initialized after app is ready
+const rateLimiter = new RateLimiter();
+let usageTracker = null; // Initialized after app is ready
 
 // Backend mode settings
 let backendMode = false;
@@ -783,9 +788,14 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      enableRemoteModule: false
+      enableRemoteModule: false,
+      experimentalFeatures: false,
+      navigateOnDragDrop: false,
+      spellcheck: false,
+      webgl: false
     }
   });
 
@@ -841,9 +851,13 @@ function createControlPanel() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      enableRemoteModule: false
+      enableRemoteModule: false,
+      experimentalFeatures: false,
+      navigateOnDragDrop: false,
+      spellcheck: true
     }
   });
 
@@ -1018,6 +1032,17 @@ function registerHotkey(newHotkey = null) {
 // Helper to create validated IPC handler
 function createValidatedHandler(channel, handler) {
   return async (event, ...args) => {
+    // Rate limit check (defends against runaway renderer loops & XSS-driven API exhaustion)
+    const rl = rateLimiter.check(channel);
+    if (!rl.ok) {
+      logError(`IPC rate limit exceeded for ${channel}, retry in ${rl.retryAfterMs}ms`);
+      return {
+        success: false,
+        error: 'rate_limit_exceeded',
+        retryAfterMs: rl.retryAfterMs,
+        message: `Demasiadas solicitudes. Intenta de nuevo en ${Math.ceil(rl.retryAfterMs / 1000)}s.`
+      };
+    }
     const validation = validateIpcMessage(channel, ...args);
     if (!validation.isValid) {
       logError(`IPC validation failed for ${channel}:`, validation.error);
@@ -1166,6 +1191,38 @@ function setupIpcHandlers() {
     log('Audio data length:', audioData?.length || 0);
     log('Options:', JSON.stringify({ language: options?.language, processingMode }));
     log('Backend mode:', backendMode, 'Has token:', !!backendAccessToken);
+
+    // Rate limit protection (defense-in-depth; createValidatedHandler also checks)
+    const rl = rateLimiter.check('transcribe-audio');
+    if (!rl.ok) {
+      logError(`transcribe-audio rate-limited, retry in ${rl.retryAfterMs}ms`);
+      return {
+        success: false,
+        error: 'rate_limit_exceeded',
+        retryAfterMs: rl.retryAfterMs,
+        message: `Demasiadas transcripciones. Espera ${Math.ceil(rl.retryAfterMs / 1000)}s.`
+      };
+    }
+
+    // Free-tier enforcement: only applies when NOT using backend and NOT bringing own key
+    // If user has stored their own key, mark the tracker so future checks skip the ceiling.
+    const userOwnKey = secureStorage?.getSecure('openai_api_key') || '';
+    if (usageTracker) {
+      usageTracker.markOwnApiKey(!!userOwnKey);
+      const gate = usageTracker.canTranscribe({
+        backendAuthenticated: backendMode && !!backendAccessToken
+      });
+      if (!gate.allowed) {
+        logError('Free tier exhausted, blocking transcription');
+        return {
+          success: false,
+          error: 'free_tier_exhausted',
+          code: 'FREE_TIER_EXHAUSTED',
+          message: 'Agotaste los 30 minutos de prueba gratis. Agrega tu propia API key o suscríbete a un plan.',
+          usage: gate
+        };
+      }
+    }
 
     // If backend mode is enabled and user is authenticated, use backend
     if (backendMode && backendAccessToken) {
@@ -1453,6 +1510,23 @@ function setupIpcHandlers() {
       log('Transcription complete - words:', formattedText.split(/\s+/).length, 'chars:', formattedText.length);
       log(`Whisper API latency: ${elapsedTime}ms (no FFmpeg conversion)`);
 
+      // Record usage: estimate duration from WAV buffer (16kHz mono 16-bit = 32000 bytes/sec)
+      // For WebM we fall back to a rough estimate based on transcribed word count.
+      try {
+        let durationSec = 0;
+        if (isWAV && audioBuffer.length > 44) {
+          durationSec = (audioBuffer.length - 44) / 32000;
+        } else {
+          // Rough estimate: ~2.5 words/sec of speech
+          const wordCount = formattedText.split(/\s+/).filter(Boolean).length;
+          durationSec = Math.max(1, wordCount / 2.5);
+        }
+        usageTracker?.record(durationSec);
+        log(`Recorded usage: ${durationSec.toFixed(2)}s`);
+      } catch (usageErr) {
+        logError('Usage recording failed:', usageErr.message);
+      }
+
       // Save debug audio if enabled
       await saveDebugAudio(audioData, result.text, formattedText, processingMode, elapsedTime, 'local');
 
@@ -1465,7 +1539,8 @@ function setupIpcHandlers() {
         processingMode
       });
 
-      return { success: true, text: formattedText, latencyMs: elapsedTime, processingMode };
+      const usageAfter = usageTracker?.summary();
+      return { success: true, text: formattedText, latencyMs: elapsedTime, processingMode, usage: usageAfter };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
       logError('Error:', error.message);
@@ -1860,6 +1935,94 @@ Output el texto completo corregido, sin comillas.`;
   });
 
   // Check if encryption is available
+  // Validate API key against provider's live endpoint (cheap call that only checks auth)
+  ipcMain.handle('validate-api-key', async (event, provider, key) => {
+    const validation = validateIpcMessage('validate-api-key', provider, key);
+    if (!validation.isValid) {
+      return { success: false, error: validation.error };
+    }
+    const rl = rateLimiter.check('validate-api-key');
+    if (!rl.ok) {
+      return { success: false, error: 'rate_limit_exceeded', retryAfterMs: rl.retryAfterMs };
+    }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      let response;
+      if (provider === 'openai') {
+        response = await fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${key}` },
+          signal: controller.signal
+        });
+      } else if (provider === 'anthropic') {
+        // Anthropic doesn't have a free GET endpoint; hit /v1/messages with a 1-token request
+        response = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'hi' }]
+          }),
+          signal: controller.signal
+        });
+      } else {
+        clearTimeout(timeoutId);
+        return { success: false, error: 'Unsupported provider' };
+      }
+      clearTimeout(timeoutId);
+      if (response.ok) {
+        return { success: true, valid: true, provider };
+      }
+      // 401/403 means bad key; other errors mean we couldn't verify
+      if (response.status === 401 || response.status === 403) {
+        return { success: true, valid: false, reason: 'unauthorized', provider };
+      }
+      const bodyText = await response.text().catch(() => '');
+      return {
+        success: true,
+        valid: false,
+        reason: 'provider_error',
+        status: response.status,
+        bodyPreview: bodyText.slice(0, 200)
+      };
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        return { success: false, error: 'timeout', message: 'La validación tardó más de 8s.' };
+      }
+      return { success: false, error: 'network', message: err.message };
+    }
+  });
+
+  // Usage / free-tier (for UI counter and paywall)
+  ipcMain.handle('get-usage', () => {
+    if (!usageTracker) return { success: false, error: 'Usage tracker not initialized' };
+    const gate = usageTracker.canTranscribe({
+      backendAuthenticated: backendMode && !!backendAccessToken
+    });
+    return {
+      success: true,
+      summary: usageTracker.summary(),
+      gate,
+      backendAuthenticated: backendMode && !!backendAccessToken
+    };
+  });
+
+  ipcMain.handle('reset-usage', () => {
+    if (!usageTracker) return { success: false };
+    // Only allow reset in dev mode (avoid abuse in production)
+    if (app.isPackaged && process.env.MURMULLO_ALLOW_USAGE_RESET !== '1') {
+      return { success: false, error: 'Not allowed in production' };
+    }
+    usageTracker.reset();
+    return { success: true, summary: usageTracker.summary() };
+  });
+
   ipcMain.handle('check-encryption', () => {
     return {
       available: secureStorage?.isEncryptionAvailable() || false,
@@ -2676,6 +2839,11 @@ app.whenReady().then(async () => {
     const secureStoragePath = path.join(app.getPath('userData'), 'secure-keys.json');
     secureStorage = new SecureStorage(secureStoragePath);
     log('Secure storage initialized, encryption available:', secureStorage.isEncryptionAvailable());
+
+    // Initialize free-tier usage tracker
+    const usageStoragePath = path.join(app.getPath('userData'), 'usage.json');
+    usageTracker = new UsageTracker(usageStoragePath);
+    log('Usage tracker initialized:', usageTracker.summary());
 
     // Setup Content Security Policy
     setupContentSecurityPolicy();

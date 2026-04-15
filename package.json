@@ -1,6 +1,6 @@
 {
   "name": "murmullo",
-  "version": "1.8.0",
+  "version": "1.9.0-beta.0",
   "description": "Voice dictation for Spanish-speaking developers",
   "main": "main.js",
   "scripts": {
@@ -79,6 +79,10 @@
       "preload.js",
       "secureStorage.js",
       "ipcValidation.js",
+      "rateLimiter.js",
+      "usageTracker.js",
+      "LICENSE",
+      "NOTICE",
       "node_modules/**/*",
       "!node_modules/**/README*",
       "!node_modules/**/CHANGELOG*",
@@ -106,7 +110,10 @@
       ],
       "icon": "resources/icon.png",
       "requestedExecutionLevel": "asInvoker",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true,
+      "signingHashAlgorithms": ["sha256"],
+      "publisherName": "Jorge Cepeda",
+      "verifyUpdateCodeSignature": true
     },
     "mac": {
       "target": "dmg",

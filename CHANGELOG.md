@@ -7,6 +7,59 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.9.0-beta.0] - 2026-04-14
+
+Primer release de la línea 1.9, enfocado en endurecer Murmullo para distribución pública. **La línea 1.8 sigue siendo estable** (tag `v1.8.0-stable`) y es la recomendada para uso diario mientras se valida 1.9.
+
+### Seguridad (crítico para producción)
+
+- **Sandbox del renderer activado** (`sandbox: true` en ambas ventanas). Si se explota un XSS en React el atacante ya no tiene acceso ilimitado al IPC; se reduce drásticamente el blast radius.
+- **DEBUG solo en builds no empaquetados.** `DEBUG = !app.isPackaged`. Los instaladores firmados dejan de escribir logs verbosos con rutas del usuario y metadata de hardware.
+- **Rate limiting por canal IPC** (`rateLimiter.js`). Protege contra renderers comprometidos que intenten quemar quota de OpenAI/Anthropic en segundos. Policies conservadoras por canal: 10/min en transcripción, 5/min en login (defensa anti brute-force), 120/min default.
+- **CSP extendida** para soportar Groq (`api.groq.com`) y Google Gemini (`generativelanguage.googleapis.com`) sin abrir orígenes arbitrarios.
+- **webPreferences endurecido**: `experimentalFeatures: false`, `navigateOnDragDrop: false`, `webgl: false` en la ventana principal.
+
+### Monetización y límite gratuito
+
+- **UsageTracker** (`usageTracker.js`) persiste en `%APPDATA%/murmullo/usage.json` el total de segundos transcritos.
+- **Free tier de 30 minutos** aplicado automáticamente. Bloquea transcripción con error `FREE_TIER_EXHAUSTED` y sugiere añadir API key propia o suscripción.
+- **BYOK (Bring Your Own Key)** detectado automáticamente: si el usuario guardó su API key, el ceiling se desactiva (paga directo a OpenAI/Anthropic).
+- **Backend autenticado** siempre tiene preferencia sobre el límite local (usa las cuotas del plan contratado).
+- Handlers IPC `get-usage`, `reset-usage`, `validate-api-key` expuestos al renderer para construir UI de contador y paywall.
+
+### UX y resiliencia
+
+- **Tope absoluto de grabación a 5 minutos**: previene fugas de memoria y grabaciones fantasma por hotkeys olvidados.
+- **Mensajes de error específicos**: el renderer traduce códigos (`rate_limit_exceeded`, `FREE_TIER_EXHAUSTED`, `401`, `network`) a texto accionable en español.
+- **Validación en vivo de API keys** contra el proveedor (`GET /v1/models` para OpenAI, `POST /v1/messages` de 1 token para Anthropic), con timeout de 8 segundos.
+
+### Legal y distribución
+
+- **LICENSE** (MIT con atribución a Open-Whispr).
+- **NOTICE** (dependencias y servicios de terceros detallados).
+- **PRIVACY.md** (política de privacidad en español, con tabla de datos almacenados localmente).
+- **TERMS.md** (términos de uso, plan gratuito, jurisdicción Chile).
+- **CODE_SIGNING.md** (guía paso a paso para conseguir un certificado EV y activarlo en CI).
+
+### Build y CI
+
+- `package.json` preparado para code signing: `signAndEditExecutable: true`, `signingHashAlgorithms: ["sha256"]`, `publisherName`, `verifyUpdateCodeSignature: true`.
+- `.github/workflows/ci.yml` consume `WIN_CSC_LINK` y `WIN_CSC_KEY_PASSWORD` desde secrets (sin romper si no existen, útil para forks).
+- Rama `v1.9-dev` añadida al workflow para validación continua.
+
+### Tests
+
+- 18 tests nuevos (`rateLimiter` + `usageTracker`). Suite total: 102 tests, todos en verde.
+
+### Pendiente para 1.9.0 estable
+
+- Paywall/banner UI visible en el panel de control cuando el usuario se acerque a los 30 minutos.
+- Modal de onboarding en el primer uso que explique hotkey y modos.
+- Refactor de `ControlPanel.jsx` (2.5k líneas) en sub-componentes.
+- Compra del certificado EV y primer release firmado.
+
+---
+
 ## [1.8.0] - 2026-04-05
 
 ### Agregado

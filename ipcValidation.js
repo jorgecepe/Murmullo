@@ -376,6 +376,31 @@ function validateIpcMessage(channel, ...args) {
     case 'export-dictionary':
       return validationResult(true);
 
+    // validate-api-key: live validation against provider API
+    case 'validate-api-key': {
+      const [provider, key] = args;
+      if (!isValidProvider(provider)) {
+        return validationResult(false, 'Invalid provider');
+      }
+      if (!isString(key) || !isValidApiKey(key)) {
+        return validationResult(false, 'Invalid key format');
+      }
+      return validationResult(true);
+    }
+
+    // Backend auth channels
+    case 'backend-login':
+    case 'backend-register': {
+      const [email, password] = args;
+      if (!isNonEmptyString(email) || email.length > 254) {
+        return validationResult(false, 'Invalid email');
+      }
+      if (!isNonEmptyString(password) || password.length < 8 || password.length > 200) {
+        return validationResult(false, 'Invalid password');
+      }
+      return validationResult(true);
+    }
+
     // Handlers that take no arguments or only need basic validation
     case 'get-api-keys':
     case 'check-encryption':
@@ -391,6 +416,25 @@ function validateIpcMessage(channel, ...args) {
     case 'get-available-hotkeys':
     case 'get-setting':
     case 'set-setting':
+    case 'get-usage':
+    case 'reset-usage':
+    case 'get-backend-settings':
+    case 'check-backend-health':
+    case 'backend-logout':
+    case 'backend-get-me':
+    case 'backend-get-usage':
+    case 'get-update-status':
+    case 'check-for-updates':
+    case 'download-update':
+    case 'install-update':
+    case 'get-debug-audio-settings':
+    case 'set-debug-audio-enabled':
+    case 'open-debug-audio-folder':
+    case 'clear-debug-audio':
+    case 'window-start-drag':
+    case 'window-drag-end':
+    case 'set-backend-mode':
+    case 'set-backend-url':
       return validationResult(true);
 
     default:

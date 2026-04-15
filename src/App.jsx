@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, Check, AlertCircle, Loader2 } from 'lucide-react';
 
+// Hard cap: any single recording longer than this is automatically stopped.
+// Protects against forgotten hotkeys, crashes, and runaway memory growth.
+const MAX_RECORDING_MS = 5 * 60 * 1000; // 5 minutes
+
 // Status states
 const STATUS = {
   IDLE: 'idle',
@@ -28,6 +32,7 @@ function App() {
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
   const toastTimeoutRef = useRef(null);
+  const recordingTimeoutRef = useRef(null);
 
 
   // Play completion sound
@@ -247,6 +252,17 @@ function App() {
       console.log('[App] Recording started');
       setStatus(STATUS.RECORDING);
       setErrorMessage('');
+
+      // Hard cap: stop recording after MAX_RECORDING_MS to prevent runaway memory
+      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          console.warn('[App] Max recording time reached, auto-stopping');
+          showToast('warning', `Grabación detenida automáticamente tras ${MAX_RECORDING_MS / 60000} minutos.`, 6000);
+          try { mediaRecorderRef.current.stop(); } catch (e) {}
+          setStatus(STATUS.PROCESSING);
+        }
+      }, MAX_RECORDING_MS);
     } catch (error) {
       console.error('[App] Failed to start recording:', error);
       setStatus(STATUS.ERROR);
@@ -256,6 +272,10 @@ function App() {
 
   const stopRecording = useCallback(() => {
     console.log('[App] Stopping recording...');
+    if (recordingTimeoutRef.current) {
+      clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = null;
+    }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       // Just stop - don't use requestData() as it can cause issues
       mediaRecorderRef.current.stop();
@@ -383,7 +403,23 @@ function App() {
       console.log('[App] Transcription result:', transcriptionResult);
 
       if (!transcriptionResult.success) {
-        throw new Error(transcriptionResult.error || 'Transcription failed');
+        // Surface friendly, actionable errors. The main process returns
+        // structured error codes; translate them into user-facing messages.
+        const code = transcriptionResult.code || transcriptionResult.error;
+        if (code === 'FREE_TIER_EXHAUSTED' || transcriptionResult.error === 'free_tier_exhausted') {
+          throw new Error('Agotaste los 30 minutos gratuitos. Agrega tu API key en Configuración o suscríbete a un plan.');
+        }
+        if (transcriptionResult.error === 'rate_limit_exceeded') {
+          throw new Error(transcriptionResult.message || 'Demasiadas solicitudes seguidas. Espera unos segundos.');
+        }
+        const raw = transcriptionResult.error || 'Transcription failed';
+        if (/api key|unauthorized|401/i.test(raw)) {
+          throw new Error('API key inválida o faltante. Configúrala en el Panel de control → API Keys.');
+        }
+        if (/network|fetch|ENOTFOUND|timeout|abort/i.test(raw)) {
+          throw new Error('Sin conexión o el servidor tardó demasiado. Revisa tu internet e intenta de nuevo.');
+        }
+        throw new Error(raw);
       }
 
       let finalText = transcriptionResult.text;

@@ -1,0 +1,34 @@
+Murmullo
+========
+
+This product is a derivative work of Open-Whispr (https://github.com/HeroTools/open-whispr),
+licensed under the MIT License. Significant modifications have been made to tailor the
+application for Spanish-speaking developers, including but not limited to:
+
+  - Spanish-first UI and localization.
+  - Preservation of English technical terms through AI-assisted post-processing.
+  - Custom hotkey defaults (Ctrl+Shift+Space).
+  - Free-tier usage tracking and backend-mediated subscription model.
+  - Additional IPC validation and rate limiting.
+  - Secure storage of API credentials using Electron's safeStorage API.
+  - Code signing preparation and production hardening.
+
+Third-party dependencies and their licenses are listed in the package-lock.json
+and in node_modules/*/LICENSE files. Notable runtime dependencies include:
+
+  - Electron (MIT), https://github.com/electron/electron
+  - React (MIT), https://github.com/facebook/react
+  - FFmpeg (LGPL), bundled via ffmpeg-static
+  - sql.js (MIT), https://github.com/sql-js/sql.js
+  - Tailwind CSS (MIT), https://github.com/tailwindlabs/tailwindcss
+  - Lucide icons (ISC), https://github.com/lucide-icons/lucide
+  - electron-updater (MIT), https://github.com/electron-userland/electron-builder
+
+Third-party services contacted at runtime (only when explicitly enabled by the user
+with valid credentials):
+
+  - OpenAI Whisper API (api.openai.com) for speech-to-text transcription.
+  - Anthropic Claude API (api.anthropic.com) for text post-processing.
+  - Murmullo Backend (murmullo-api.luminaconsulting.ai) for authenticated subscriptions.
+
+No telemetry is collected without explicit user opt-in. See PRIVACY.md for details.

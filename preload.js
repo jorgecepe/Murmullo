@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
   setApiKey: (provider, key) => ipcRenderer.invoke('set-api-key', provider, key),
   checkEncryption: () => ipcRenderer.invoke('check-encryption'),
+  validateApiKey: (provider, key) => ipcRenderer.invoke('validate-api-key', provider, key),
+
+  // Usage / free tier
+  getUsage: () => ipcRenderer.invoke('get-usage'),
+  resetUsage: () => ipcRenderer.invoke('reset-usage'),
 
   // Logs
   getLogsPath: () => ipcRenderer.invoke('get-logs-path'),
