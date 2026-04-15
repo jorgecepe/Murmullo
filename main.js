@@ -1558,6 +1558,18 @@ function setupIpcHandlers() {
       return { success: false, error: validation.error };
     }
 
+    // Rate limit (defense-in-depth; AI providers charge per token)
+    const rl = rateLimiter.check('process-text');
+    if (!rl.ok) {
+      logError(`process-text rate-limited, retry in ${rl.retryAfterMs}ms`);
+      return {
+        success: false,
+        error: 'rate_limit_exceeded',
+        retryAfterMs: rl.retryAfterMs,
+        message: `Demasiadas llamadas al procesador. Espera ${Math.ceil(rl.retryAfterMs / 1000)}s.`
+      };
+    }
+
     // Sanitize text input
     const sanitizedText = sanitizeString(text, 50000); // Max 50k chars
 
@@ -2906,6 +2918,26 @@ app.whenReady().then(async () => {
     registerHotkey(currentHotkey);
     setupIpcHandlers();
     setupAutoUpdater();
+
+    // First-run detection: if there is no marker file yet, open the control
+    // panel so the user lands directly on the WelcomeModal instead of only
+    // seeing the tiny floating icon.
+    try {
+      const firstRunMarker = path.join(app.getPath('userData'), '.first-run-completed');
+      if (!fs.existsSync(firstRunMarker)) {
+        log('First run detected, opening control panel with onboarding');
+        // Give the window a moment to render before showing.
+        setTimeout(() => {
+          if (controlPanel && !controlPanel.isDestroyed()) {
+            controlPanel.show();
+            controlPanel.focus();
+          }
+        }, 1200);
+        fs.writeFileSync(firstRunMarker, new Date().toISOString());
+      }
+    } catch (firstRunErr) {
+      logError('First-run check failed:', firstRunErr.message);
+    }
 
     // Restore window visibility after system resume (sleep/wake)
     powerMonitor.on('resume', () => {
