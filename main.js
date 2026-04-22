@@ -679,7 +679,9 @@ async function transcribeViaBackend(audioData, options = {}) {
     body: JSON.stringify({
       audio: base64Audio,
       language: options.language || 'es',
-      model: 'whisper-1'
+      model: 'whisper-1',
+      // Backend defaults to TRANSCRIPTION_PROVIDER env var, but can be overridden
+      ...(options.transcriptionProvider && { provider: options.transcriptionProvider })
     }),
     signal: options.signal
   });
