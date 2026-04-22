@@ -91,6 +91,39 @@ CREATE TABLE transcriptions (
 CREATE INDEX idx_timestamp ON transcriptions(timestamp DESC);
 ```
 
+## Backend API
+
+Murmullo includes a Node.js + Express backend for multi-user deployments:
+
+```
+backend/
+├── src/
+│   ├── index.js - Server setup
+│   ├── routes/
+│   │   ├── auth.js - JWT login/register
+│   │   ├── transcription.js - Whisper proxy (OpenAI or Groq)
+│   │   ├── ai.js - Claude/GPT post-processing
+│   │   └── user.js - User management
+│   ├── services/
+│   │   ├── whisperService.js - Multi-provider transcription
+│   │   └── aiService.js - AI text processing
+│   └── db/ - PostgreSQL models
+├── .env.example - Configuration template
+└── README.md - Deployment guide
+```
+
+**Key Features**:
+- JWT authentication with refresh tokens
+- Per-user usage quotas (Free: 120 min/month, Pro: 300 min/month)
+- Support for OpenAI Whisper or Groq (configurable via env)
+- Rate limiting (10 transcriptions/min per user)
+- Automatic language detection (maps `auto` to `es` for Groq)
+
+**Deployment**:
+- Docker: `docker build -t murmullo-api ./backend && docker run ...`
+- Railway, Render, Fly.io: Push `backend/` folder, set env vars
+- See `backend/README.md` for detailed instructions
+
 ## Testing Methodology (Ralph Wiggum Loop)
 
 The project uses a mandatory iterative testing approach defined in `MURMULLO_FRESH_START.md` Section 14:
@@ -136,6 +169,35 @@ USE_LOCAL_WHISPER=false
 ### localStorage Keys
 `language`, `useLocalWhisper`, `whisperModel`, `reasoningProvider`, `reasoningModel`, `hotkey`, `processingMode`, `hasCompletedOnboarding`
 
-## API Keys
+## API Keys & Providers
 
-Provided in `MURMULLO_FRESH_START.md` Section 10.
+### Desktop App (Local Mode)
+- **Transcription**: OpenAI Whisper or Groq
+  - OpenAI: `sk-proj-...` keys from https://platform.openai.com/api-keys
+  - Groq: `gsk_...` keys from https://console.groq.com
+  - Groq benefits: 5-10x faster, 9x cheaper (~$0.00067/min vs $0.006/min)
+- **Post-processing**: Claude Haiku, GPT-4 Mini, Google Gemini
+  - Anthropic: `sk-ant-...` from https://console.anthropic.com (recommended)
+
+### Backend Mode (Server Proxy)
+- Users don't need personal API keys when using backend mode
+- Backend at `backend/` folder handles transcription and AI processing
+- Supports both OpenAI and Groq for transcription via `TRANSCRIPTION_PROVIDER` env var
+- Set in backend `.env`:
+  ```
+  TRANSCRIPTION_PROVIDER=groq
+  GROQ_API_KEY=gsk_your_key
+  OPENAI_API_KEY=sk-proj_fallback (optional, for fallback)
+  ANTHROPIC_API_KEY=sk-ant_your_key (for AI post-processing)
+  ```
+
+### Cost Comparison (120 min/month free tier)
+| Provider | Cost/min | Monthly Cost | Speed | Notes |
+|----------|----------|--------------|-------|-------|
+| OpenAI | $0.006 | ~$0.72 | 1x | Best for Spanish accents |
+| Groq | $0.00067 | ~$0.08 | 5-10x | 90% savings, LPU acceleration |
+| Backend (Groq) | $0.00 | $0 | 5-10x | Free for users, your server pays |
+
+### Setup Steps
+1. **Local mode**: Add keys in Control Panel → API Keys
+2. **Backend mode**: Deploy backend with Groq API key, users login without keys
