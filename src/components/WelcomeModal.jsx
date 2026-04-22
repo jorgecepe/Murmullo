@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Mic, Key, Cloud, CheckCircle2, XCircle, Loader2, ArrowRight, Shield } from 'lucide-react';
+import { Mic, Key, Cloud, CheckCircle2, XCircle, Loader2, ArrowRight, Shield, Zap } from 'lucide-react';
 
 /**
  * WelcomeModal

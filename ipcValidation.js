@@ -79,9 +79,11 @@ function isValidApiKey(value) {
   if (!isString(value)) return false;
   if (value === '') return true; // Empty is allowed (to clear key)
 
-  // OpenAI keys start with sk-
-  // Anthropic keys start with sk-ant-
-  const validPrefixes = ['sk-', 'sk-ant-'];
+  // Accepted prefixes:
+  //   sk-       OpenAI (sk-proj-..., sk-...)
+  //   sk-ant-   Anthropic
+  //   gsk_      Groq
+  const validPrefixes = ['sk-', 'sk-ant-', 'gsk_'];
   return validPrefixes.some(prefix => value.startsWith(prefix)) && value.length >= 20;
 }
 
@@ -107,10 +109,11 @@ function isValidHotkey(value) {
 }
 
 /**
- * Validate provider name
+ * Validate provider name. `groq` is accepted because since v1.9.0-beta.3
+ * Murmullo can use Groq's OpenAI-compatible endpoint for transcription.
  */
 function isValidProvider(value) {
-  return ['openai', 'anthropic'].includes(value);
+  return ['openai', 'anthropic', 'groq'].includes(value);
 }
 
 /**

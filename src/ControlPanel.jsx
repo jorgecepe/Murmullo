@@ -1,5 +1,5 @@
 import React, { useState, useEffect, Component } from 'react';
-import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle, BookText, Plus, Edit3, Play, Upload } from 'lucide-react';
+import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle, BookText, Plus, Edit3, Play, Upload, ClipboardPaste, Eye, EyeOff } from 'lucide-react';
 import UsagePanel from './components/UsagePanel';
 import WelcomeModal from './components/WelcomeModal';
 
@@ -83,16 +83,62 @@ function ControlPanel() {
     processingMode: 'smart',
     reasoningProvider: 'anthropic',
     reasoningModel: 'claude-3-haiku-20240307',
+    transcriptionProvider: 'openai', // 'openai' | 'groq'
+    instantPaste: false,
+    fastUpload: true,
+    silenceDetection: true,
+    silenceThreshold: 0.025,
     soundEnabled: true  // Completion sound enabled by default
   });
   const [apiKeys, setApiKeys] = useState({
     openai: '',
     anthropic: '',
+    groq: '',
     openaiMasked: '',
-    anthropicMasked: ''
+    anthropicMasked: '',
+    groqMasked: ''
   });
   const [encryptionStatus, setEncryptionStatus] = useState({ available: false, platform: '' });
-  const [apiKeySaveStatus, setApiKeySaveStatus] = useState({ openai: '', anthropic: '' });
+  const [apiKeySaveStatus, setApiKeySaveStatus] = useState({ openai: '', anthropic: '', groq: '' });
+  // Per-provider visibility toggle for the "eye" button. Starts hidden so the
+  // pasted key isn't shoulder-surfable, the user can flip it to verify the
+  // paste before hitting Guardar.
+  const [showApiKey, setShowApiKey] = useState({ openai: false, anthropic: false, groq: false });
+
+  // Paste text from the OS clipboard into a given API key input. Routed
+  // through a main-process IPC because Chromium disables the native "Paste"
+  // option in the context menu of `<input type="password">` for security,
+  // and navigator.clipboard.readText() is unreliable in the sandboxed
+  // renderer without user-gesture permission prompts.
+  const pasteIntoApiKey = async (provider) => {
+    try {
+      const res = await window.electronAPI?.readClipboard?.();
+      if (res?.success && res.text) {
+        handleApiKeyChange(provider, res.text.trim());
+      }
+    } catch (err) {
+      console.warn('[ControlPanel] pasteIntoApiKey failed:', err);
+    }
+  };
+
+  // After saving a key, fire a live validation against the provider so the
+  // user gets immediate feedback if they copied a truncated or wrong key.
+  // Non-blocking: the save already happened, this only updates the status
+  // message shown under the field.
+  const validateSavedKey = async (provider, key) => {
+    try {
+      if (!window.electronAPI?.validateApiKey || !key) return;
+      const res = await window.electronAPI.validateApiKey(provider, key);
+      if (res?.success && res.valid) {
+        setApiKeySaveStatus(prev => ({ ...prev, [provider]: 'validated' }));
+      } else if (res?.success && !res.valid) {
+        setApiKeySaveStatus(prev => ({ ...prev, [provider]: 'invalid' }));
+      }
+      setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, [provider]: '' })), 6000);
+    } catch (err) {
+      console.warn('[ControlPanel] validateSavedKey failed:', err);
+    }
+  };
   const [history, setHistory] = useState([]);
   const [saved, setSaved] = useState(false);
   const [logFiles, setLogFiles] = useState([]);
@@ -194,6 +240,11 @@ function ControlPanel() {
       processingMode: localStorage.getItem('processingMode') || 'smart',
       reasoningProvider: localStorage.getItem('reasoningProvider') || 'anthropic',
       reasoningModel: localStorage.getItem('reasoningModel') || 'claude-3-haiku-20240307',
+      transcriptionProvider: localStorage.getItem('transcriptionProvider') || 'openai',
+      instantPaste: localStorage.getItem('instantPaste') === 'true',
+      fastUpload: localStorage.getItem('fastUpload') !== 'false',
+      silenceDetection: localStorage.getItem('silenceDetection') !== 'false',
+      silenceThreshold: parseFloat(localStorage.getItem('silenceThreshold')) || 0.025,
       soundEnabled: localStorage.getItem('soundEnabled') !== 'false' // Default true
     };
     setSettings(loadedSettings);
@@ -204,10 +255,13 @@ function ControlPanel() {
         setApiKeys({
           openai: '', // Don't store actual keys in state
           anthropic: '',
+          groq: '',
           openaiMasked: keys.openaiMasked || '',
           anthropicMasked: keys.anthropicMasked || '',
+          groqMasked: keys.groqMasked || '',
           openaiHasKey: !!keys.openai,
-          anthropicHasKey: !!keys.anthropic
+          anthropicHasKey: !!keys.anthropic,
+          groqHasKey: !!keys.groq
         });
       });
     }
@@ -745,6 +799,36 @@ function ControlPanel() {
 
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-2">
+                Proveedor de transcripción
+              </label>
+              <select
+                value={settings.transcriptionProvider}
+                onChange={(e) => handleSettingChange('transcriptionProvider', e.target.value)}
+                className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                disabled={backendMode && !!user}
+              >
+                <option value="openai">OpenAI Whisper (estándar)</option>
+                <option value="groq">Groq Whisper v3 Turbo (mucho más rápido)</option>
+              </select>
+              {backendMode && !!user ? (
+                <p className="mt-1 text-xs text-amber-400">
+                  Mientras tu <b>plan del servidor</b> esté activo (pestaña Cuenta), las transcripciones las procesa el backend. Esta selección sólo aplica si desactivas el plan o quedas offline.
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-slate-400">
+                  {settings.transcriptionProvider === 'groq'
+                    ? (apiKeys.groqHasKey
+                        ? 'Groq procesa el audio ~5-10× más rápido que OpenAI y cuesta ~9× menos. Usando tu Groq API key.'
+                        : '⚠ Seleccionaste Groq pero no hay Groq API key guardada. Añádela en API Keys o cambia a OpenAI.')
+                    : (apiKeys.openaiHasKey
+                        ? 'OpenAI Whisper con tu API key. Si buscas más velocidad, prueba Groq.'
+                        : '⚠ OpenAI Whisper seleccionado pero no hay OpenAI API key guardada. Añádela en API Keys.')}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">
                 Proveedor de IA
               </label>
               <select
@@ -780,6 +864,109 @@ function ControlPanel() {
                   </>
                 )}
               </select>
+            </div>
+
+            {/* Instant paste toggle (fire-and-forget AI refinement) */}
+            <div className="p-4 bg-slate-700/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="pr-3">
+                  <h3 className="font-medium text-white flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    Pegado instantáneo
+                  </h3>
+                  <p className="text-sm text-slate-400">
+                    Pega la transcripción de Whisper en cuanto llega y deja la corrección de IA trabajando en segundo plano. Más rápido, pero el texto pegado es el crudo de Whisper (la versión corregida se guarda en el historial).
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSettingChange('instantPaste', !settings.instantPaste)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                    settings.instantPaste ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      settings.instantPaste ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Fast upload toggle (skip WAV conversion, send WebM/Opus) */}
+            <div className="p-4 bg-slate-700/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="pr-3">
+                  <h3 className="font-medium text-white">Subida rápida</h3>
+                  <p className="text-sm text-slate-400">
+                    Envía el audio en formato original (WebM/Opus) en vez de convertirlo primero a WAV. Ahorra ~200-500 ms por transcripción y reduce ~10× los bytes subidos. Desactiva sólo si tienes problemas de compatibilidad.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSettingChange('fastUpload', !settings.fastUpload)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                    settings.fastUpload ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      settings.fastUpload ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Silence gate toggle + threshold slider */}
+            <div className="p-4 bg-slate-700/50 rounded-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="pr-3">
+                  <h3 className="font-medium text-white">Detectar silencio</h3>
+                  <p className="text-sm text-slate-400">
+                    Si presionas el hotkey pero no hablas, Murmullo no envía audio a Whisper. Evita alucinaciones típicas como "Subtítulos de Amara.org" y ahorra minutos del plan.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSettingChange('silenceDetection', !settings.silenceDetection)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${
+                    settings.silenceDetection ? 'bg-blue-600' : 'bg-slate-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      settings.silenceDetection ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {settings.silenceDetection && (
+                <div className="pl-0">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-slate-300">
+                      Umbral (RMS pico): <span className="font-mono text-white">{settings.silenceThreshold.toFixed(3)}</span>
+                    </label>
+                    <button
+                      onClick={() => handleSettingChange('silenceThreshold', 0.025)}
+                      className="text-xs text-blue-400 hover:underline"
+                    >
+                      Restablecer (0.025)
+                    </button>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.005"
+                    max="0.1"
+                    step="0.005"
+                    value={settings.silenceThreshold}
+                    onChange={(e) => handleSettingChange('silenceThreshold', parseFloat(e.target.value))}
+                    className="w-full accent-blue-500"
+                  />
+                  <p className="mt-1 text-xs text-slate-400">
+                    Sube el umbral si un silencio se envía igual a transcribir (tu micrófono tiene mucho ruido de fondo). Bájalo si grabaciones con voz suave se descartan por error. El valor medido aparece en <b>Configuración → Logs</b> después de cada grabación (busca <code className="bg-slate-900 px-1 rounded">silence-gate</code>).
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Sound toggle */}
@@ -1502,9 +1689,34 @@ function ControlPanel() {
           </div>
         );
 
-      case TABS.API_KEYS:
+      case TABS.API_KEYS: {
+        const backendActive = backendMode && !!user;
+        const transcriptionSource = backendActive
+          ? `Plan del servidor (${user?.email || 'autenticado'})`
+          : (settings.transcriptionProvider === 'groq'
+              ? (apiKeys.groqHasKey ? 'Groq (tu key)' : '⚠ Groq seleccionado pero sin API key')
+              : (apiKeys.openaiHasKey ? 'OpenAI Whisper (tu key)' : '⚠ OpenAI Whisper pero sin API key'));
+        const aiSource = backendActive
+          ? `Plan del servidor (${user?.email || 'autenticado'})`
+          : (settings.reasoningProvider === 'anthropic'
+              ? (apiKeys.anthropicHasKey ? 'Anthropic Claude (tu key)' : '⚠ Claude seleccionado pero sin API key')
+              : (apiKeys.openaiHasKey ? 'OpenAI GPT (tu key)' : '⚠ GPT seleccionado pero sin API key'));
         return (
           <div className="space-y-6">
+            {/* Summary: which provider is actually powering each step right now */}
+            <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/30">
+              <h4 className="text-sm font-medium text-blue-400 mb-2">Proveedores activos ahora mismo</h4>
+              <ul className="text-sm text-slate-300 space-y-1">
+                <li>• <span className="text-slate-400">Transcripción:</span> {transcriptionSource}</li>
+                <li>• <span className="text-slate-400">Post-procesamiento IA:</span> {aiSource}</li>
+              </ul>
+              {backendActive && (
+                <p className="mt-2 text-xs text-slate-400">
+                  Mientras tu plan del servidor esté activo, tus API keys personales sólo se usan como respaldo. Puedes gestionarlas abajo de todos modos.
+                </p>
+              )}
+            </div>
+
             {/* Encryption status indicator */}
             <div className={`p-4 rounded-lg flex items-center gap-3 ${
               encryptionStatus.available
@@ -1532,8 +1744,13 @@ function ControlPanel() {
 
             {/* OpenAI API Key */}
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">
-                OpenAI API Key
+              <label className="flex items-center justify-between text-sm font-medium text-slate-300 mb-2">
+                <span>OpenAI API Key</span>
+                {apiKeys.openaiHasKey ? (
+                  <span className="text-xs font-normal text-green-400 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded-full">✓ Guardada</span>
+                ) : (
+                  <span className="text-xs font-normal text-slate-500">— No configurada</span>
+                )}
               </label>
               {apiKeys.openaiHasKey ? (
                 <div className="flex items-center gap-2">
@@ -1555,18 +1772,35 @@ function ControlPanel() {
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={apiKeys.openai}
-                    onChange={(e) => handleApiKeyChange('openai', e.target.value)}
-                    placeholder="sk-..."
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={showApiKey.openai ? 'text' : 'password'}
+                      value={apiKeys.openai}
+                      onChange={(e) => handleApiKeyChange('openai', e.target.value)}
+                      placeholder="Pega tu key aquí (sk-...)"
+                      className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    />
+                    <button
+                      onClick={() => pasteIntoApiKey('openai')}
+                      title="Pegar desde portapapeles"
+                      className="flex items-center gap-1 bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors text-sm"
+                    >
+                      <ClipboardPaste size={16} /> Pegar
+                    </button>
+                    <button
+                      onClick={() => setShowApiKey(prev => ({ ...prev, openai: !prev.openai }))}
+                      title={showApiKey.openai ? 'Ocultar' : 'Mostrar'}
+                      className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors"
+                    >
+                      {showApiKey.openai ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
                   <button
                     onClick={async () => {
                       if (window.electronAPI?.setApiKey && apiKeys.openai) {
-                        const result = await window.electronAPI.setApiKey('openai', apiKeys.openai);
+                        const keyToSave = apiKeys.openai;
+                        const result = await window.electronAPI.setApiKey('openai', keyToSave);
                         if (result.success) {
                           setApiKeys(prev => ({
                             ...prev,
@@ -1574,21 +1808,37 @@ function ControlPanel() {
                             openaiHasKey: true,
                             openaiMasked: result.masked
                           }));
-                          setApiKeySaveStatus(prev => ({ ...prev, openai: 'saved' }));
-                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, openai: '' })), 2000);
+                          setShowApiKey(prev => ({ ...prev, openai: false }));
+                          setApiKeySaveStatus(prev => ({ ...prev, openai: 'validating' }));
+                          validateSavedKey('openai', keyToSave);
+                        } else {
+                          setApiKeySaveStatus(prev => ({ ...prev, openai: `error:${result.error || 'desconocido'}` }));
+                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, openai: '' })), 6000);
                         }
                       }
                     }}
                     disabled={!apiKeys.openai}
-                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                    className="flex items-center justify-center gap-2 w-full bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
                   >
-                    <Shield size={18} />
+                    <Save size={16} /> Guardar key de forma cifrada
                   </button>
                 </div>
               )}
               {apiKeySaveStatus.openai && (
-                <p className={`mt-1 text-xs ${apiKeySaveStatus.openai === 'saved' ? 'text-green-400' : 'text-red-400'}`}>
-                  {apiKeySaveStatus.openai === 'saved' ? 'Key guardada de forma segura' : 'Key eliminada'}
+                <p className={`mt-1 text-xs ${
+                  apiKeySaveStatus.openai === 'validated' ? 'text-green-400' :
+                  apiKeySaveStatus.openai === 'invalid' ? 'text-red-400' :
+                  apiKeySaveStatus.openai === 'validating' ? 'text-slate-400' :
+                  apiKeySaveStatus.openai === 'removed' ? 'text-red-400' :
+                  apiKeySaveStatus.openai.startsWith('error:') ? 'text-red-400' :
+                  'text-green-400'
+                }`}>
+                  {apiKeySaveStatus.openai === 'validated' && '✓ Key guardada y verificada contra OpenAI'}
+                  {apiKeySaveStatus.openai === 'invalid' && '⚠ Key guardada pero OpenAI la rechazó (401). ¿La copiaste completa?'}
+                  {apiKeySaveStatus.openai === 'validating' && 'Verificando con OpenAI...'}
+                  {apiKeySaveStatus.openai === 'saved' && 'Key guardada de forma segura'}
+                  {apiKeySaveStatus.openai === 'removed' && 'Key eliminada'}
+                  {apiKeySaveStatus.openai.startsWith('error:') && `⚠ No se pudo guardar la key: ${apiKeySaveStatus.openai.slice(6)}`}
                 </p>
               )}
               <p className="mt-1 text-xs text-slate-400">
@@ -1596,10 +1846,119 @@ function ControlPanel() {
               </p>
             </div>
 
+            {/* Groq API Key (transcripción rápida) */}
+            <div>
+              <label className="flex items-center justify-between text-sm font-medium text-slate-300 mb-2">
+                <span>Groq API Key <span className="text-slate-500 font-normal">(transcripción rápida)</span></span>
+                {apiKeys.groqHasKey ? (
+                  <span className="text-xs font-normal text-green-400 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded-full">✓ Guardada</span>
+                ) : (
+                  <span className="text-xs font-normal text-slate-500">— No configurada</span>
+                )}
+              </label>
+              {apiKeys.groqHasKey ? (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-slate-400 font-mono text-sm">
+                    {apiKeys.groqMasked || '••••••••'}
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey) {
+                        await window.electronAPI.setApiKey('groq', '');
+                        setApiKeys(prev => ({ ...prev, groqHasKey: false, groqMasked: '' }));
+                        setApiKeySaveStatus(prev => ({ ...prev, groq: 'removed' }));
+                        setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, groq: '' })), 2000);
+                      }
+                    }}
+                    className="bg-red-500/20 hover:bg-red-500/30 text-red-400 px-3 py-2 rounded-lg transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={showApiKey.groq ? 'text' : 'password'}
+                      value={apiKeys.groq}
+                      onChange={(e) => handleApiKeyChange('groq', e.target.value)}
+                      placeholder="Pega tu key aquí (gsk_...)"
+                      className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    />
+                    <button
+                      onClick={() => pasteIntoApiKey('groq')}
+                      title="Pegar desde portapapeles"
+                      className="flex items-center gap-1 bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors text-sm"
+                    >
+                      <ClipboardPaste size={16} /> Pegar
+                    </button>
+                    <button
+                      onClick={() => setShowApiKey(prev => ({ ...prev, groq: !prev.groq }))}
+                      title={showApiKey.groq ? 'Ocultar' : 'Mostrar'}
+                      className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors"
+                    >
+                      {showApiKey.groq ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (window.electronAPI?.setApiKey && apiKeys.groq) {
+                        const keyToSave = apiKeys.groq;
+                        const result = await window.electronAPI.setApiKey('groq', keyToSave);
+                        if (result.success) {
+                          setApiKeys(prev => ({
+                            ...prev,
+                            groq: '',
+                            groqHasKey: true,
+                            groqMasked: result.masked
+                          }));
+                          setShowApiKey(prev => ({ ...prev, groq: false }));
+                          setApiKeySaveStatus(prev => ({ ...prev, groq: 'validating' }));
+                          validateSavedKey('groq', keyToSave);
+                        } else {
+                          setApiKeySaveStatus(prev => ({ ...prev, groq: `error:${result.error || 'desconocido'}` }));
+                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, groq: '' })), 6000);
+                        }
+                      }
+                    }}
+                    disabled={!apiKeys.groq}
+                    className="flex items-center justify-center gap-2 w-full bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+                  >
+                    <Save size={16} /> Guardar key de forma cifrada
+                  </button>
+                </div>
+              )}
+              {apiKeySaveStatus.groq && (
+                <p className={`mt-1 text-xs ${
+                  apiKeySaveStatus.groq === 'validated' ? 'text-green-400' :
+                  apiKeySaveStatus.groq === 'invalid' ? 'text-red-400' :
+                  apiKeySaveStatus.groq === 'validating' ? 'text-slate-400' :
+                  apiKeySaveStatus.groq === 'removed' ? 'text-red-400' :
+                  apiKeySaveStatus.groq.startsWith('error:') ? 'text-red-400' :
+                  'text-green-400'
+                }`}>
+                  {apiKeySaveStatus.groq === 'validated' && '✓ Key guardada y verificada contra Groq'}
+                  {apiKeySaveStatus.groq === 'invalid' && '⚠ Key guardada pero Groq la rechazó (401). ¿La copiaste completa?'}
+                  {apiKeySaveStatus.groq === 'validating' && 'Verificando con Groq...'}
+                  {apiKeySaveStatus.groq === 'saved' && 'Key guardada de forma segura'}
+                  {apiKeySaveStatus.groq === 'removed' && 'Key eliminada'}
+                  {apiKeySaveStatus.groq.startsWith('error:') && `⚠ No se pudo guardar la key: ${apiKeySaveStatus.groq.slice(6)}`}
+                </p>
+              )}
+              <p className="mt-1 text-xs text-slate-400">
+                Alternativa de Whisper servida por Groq (mucho más rápido y ~9x más barato). Selecciona "Groq" en Proveedor de transcripción para usarlo.
+              </p>
+            </div>
+
             {/* Anthropic API Key */}
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">
-                Anthropic API Key
+              <label className="flex items-center justify-between text-sm font-medium text-slate-300 mb-2">
+                <span>Anthropic API Key</span>
+                {apiKeys.anthropicHasKey ? (
+                  <span className="text-xs font-normal text-green-400 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded-full">✓ Guardada</span>
+                ) : (
+                  <span className="text-xs font-normal text-slate-500">— No configurada</span>
+                )}
               </label>
               {apiKeys.anthropicHasKey ? (
                 <div className="flex items-center gap-2">
@@ -1621,18 +1980,35 @@ function ControlPanel() {
                   </button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
-                  <input
-                    type="password"
-                    value={apiKeys.anthropic}
-                    onChange={(e) => handleApiKeyChange('anthropic', e.target.value)}
-                    placeholder="sk-ant-..."
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type={showApiKey.anthropic ? 'text' : 'password'}
+                      value={apiKeys.anthropic}
+                      onChange={(e) => handleApiKeyChange('anthropic', e.target.value)}
+                      placeholder="Pega tu key aquí (sk-ant-...)"
+                      className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    />
+                    <button
+                      onClick={() => pasteIntoApiKey('anthropic')}
+                      title="Pegar desde portapapeles"
+                      className="flex items-center gap-1 bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors text-sm"
+                    >
+                      <ClipboardPaste size={16} /> Pegar
+                    </button>
+                    <button
+                      onClick={() => setShowApiKey(prev => ({ ...prev, anthropic: !prev.anthropic }))}
+                      title={showApiKey.anthropic ? 'Ocultar' : 'Mostrar'}
+                      className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded-lg transition-colors"
+                    >
+                      {showApiKey.anthropic ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
                   <button
                     onClick={async () => {
                       if (window.electronAPI?.setApiKey && apiKeys.anthropic) {
-                        const result = await window.electronAPI.setApiKey('anthropic', apiKeys.anthropic);
+                        const keyToSave = apiKeys.anthropic;
+                        const result = await window.electronAPI.setApiKey('anthropic', keyToSave);
                         if (result.success) {
                           setApiKeys(prev => ({
                             ...prev,
@@ -1640,21 +2016,37 @@ function ControlPanel() {
                             anthropicHasKey: true,
                             anthropicMasked: result.masked
                           }));
-                          setApiKeySaveStatus(prev => ({ ...prev, anthropic: 'saved' }));
-                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, anthropic: '' })), 2000);
+                          setShowApiKey(prev => ({ ...prev, anthropic: false }));
+                          setApiKeySaveStatus(prev => ({ ...prev, anthropic: 'validating' }));
+                          validateSavedKey('anthropic', keyToSave);
+                        } else {
+                          setApiKeySaveStatus(prev => ({ ...prev, anthropic: `error:${result.error || 'desconocido'}` }));
+                          setTimeout(() => setApiKeySaveStatus(prev => ({ ...prev, anthropic: '' })), 6000);
                         }
                       }
                     }}
                     disabled={!apiKeys.anthropic}
-                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                    className="flex items-center justify-center gap-2 w-full bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
                   >
-                    <Shield size={18} />
+                    <Save size={16} /> Guardar key de forma cifrada
                   </button>
                 </div>
               )}
               {apiKeySaveStatus.anthropic && (
-                <p className={`mt-1 text-xs ${apiKeySaveStatus.anthropic === 'saved' ? 'text-green-400' : 'text-red-400'}`}>
-                  {apiKeySaveStatus.anthropic === 'saved' ? 'Key guardada de forma segura' : 'Key eliminada'}
+                <p className={`mt-1 text-xs ${
+                  apiKeySaveStatus.anthropic === 'validated' ? 'text-green-400' :
+                  apiKeySaveStatus.anthropic === 'invalid' ? 'text-red-400' :
+                  apiKeySaveStatus.anthropic === 'validating' ? 'text-slate-400' :
+                  apiKeySaveStatus.anthropic === 'removed' ? 'text-red-400' :
+                  apiKeySaveStatus.anthropic.startsWith('error:') ? 'text-red-400' :
+                  'text-green-400'
+                }`}>
+                  {apiKeySaveStatus.anthropic === 'validated' && '✓ Key guardada y verificada contra Anthropic'}
+                  {apiKeySaveStatus.anthropic === 'invalid' && '⚠ Key guardada pero Anthropic la rechazó (401). ¿La copiaste completa?'}
+                  {apiKeySaveStatus.anthropic === 'validating' && 'Verificando con Anthropic...'}
+                  {apiKeySaveStatus.anthropic === 'saved' && 'Key guardada de forma segura'}
+                  {apiKeySaveStatus.anthropic === 'removed' && 'Key eliminada'}
+                  {apiKeySaveStatus.anthropic.startsWith('error:') && `⚠ No se pudo guardar la key: ${apiKeySaveStatus.anthropic.slice(6)}`}
                 </p>
               )}
               <p className="mt-1 text-xs text-slate-400">
@@ -1667,6 +2059,7 @@ function ControlPanel() {
               <ul className="text-xs text-slate-400 space-y-1">
                 <li>• OpenAI: <a href="https://platform.openai.com/api-keys" className="text-blue-400 hover:underline" target="_blank" rel="noopener">platform.openai.com/api-keys</a></li>
                 <li>• Anthropic: <a href="https://console.anthropic.com" className="text-blue-400 hover:underline" target="_blank" rel="noopener">console.anthropic.com</a></li>
+                <li>• Groq: <a href="https://console.groq.com/keys" className="text-blue-400 hover:underline" target="_blank" rel="noopener">console.groq.com/keys</a></li>
               </ul>
             </div>
 
@@ -1683,6 +2076,7 @@ function ControlPanel() {
             </div>
           </div>
         );
+      }
 
       case TABS.HOTKEY:
         return (

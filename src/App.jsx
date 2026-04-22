@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Mic, MicOff, Check, AlertCircle, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Check, AlertCircle, Loader2, X, HelpCircle } from 'lucide-react';
 
 // Hard cap: any single recording longer than this is automatically stopped.
 // Protects against forgotten hotkeys, crashes, and runaway memory growth.
@@ -11,7 +11,8 @@ const STATUS = {
   RECORDING: 'recording',
   PROCESSING: 'processing',
   SUCCESS: 'success',
-  ERROR: 'error'
+  ERROR: 'error',
+  SILENCE_DETECTED: 'silence_detected'
 };
 
 function App() {
@@ -25,15 +26,29 @@ function App() {
     processingMode: 'smart',
     language: 'es',
     reasoningProvider: 'anthropic',
+    transcriptionProvider: 'openai', // 'openai' | 'groq'
+    instantPaste: false, // paste raw Whisper text immediately, refine with Claude in background
+    fastUpload: true, // skip WAV conversion, send WebM/Opus directly (~10x smaller upload)
+    silenceDetection: true, // skip transcription if recording has no detectable voice
     openaiKey: '',
     anthropicKey: ''
   });
+
+  const [isHoveringIcon, setIsHoveringIcon] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const streamRef = useRef(null);
   const toastTimeoutRef = useRef(null);
   const recordingTimeoutRef = useRef(null);
+  // Tracks the user-initiated cancel request so that in-flight stages in
+  // processAudio (WAV conversion, AI post-processing, paste) can bail out
+  // even after the HTTP fetches are aborted by the main process.
+  const cancelRequestedRef = useRef(false);
+  // Pending "reset to IDLE" timeout after SUCCESS / ERROR states. Tracked so a
+  // new recording started during the green-check window can cancel it, avoiding
+  // the RECORDING state being overwritten back to IDLE a moment later.
+  const resetStatusTimeoutRef = useRef(null);
 
 
   // Play completion sound
@@ -136,6 +151,11 @@ function App() {
       processingMode: localStorage.getItem('processingMode') || 'smart',
       language: localStorage.getItem('language') || 'es',
       reasoningProvider: localStorage.getItem('reasoningProvider') || 'anthropic',
+      transcriptionProvider: localStorage.getItem('transcriptionProvider') || 'openai',
+      instantPaste: localStorage.getItem('instantPaste') === 'true',
+      fastUpload: localStorage.getItem('fastUpload') !== 'false', // default true
+      silenceDetection: localStorage.getItem('silenceDetection') !== 'false', // default true
+      silenceThreshold: parseFloat(localStorage.getItem('silenceThreshold')) || 0.025,
       openaiKey: localStorage.getItem('openaiKey') || '',
       anthropicKey: localStorage.getItem('anthropicKey') || ''
     };
@@ -179,10 +199,13 @@ function App() {
 
     const unsubscribe = window.electronAPI.onToggleDictation(() => {
       console.log('[App] Hotkey triggered, current status:', status);
-      if (status === STATUS.IDLE) {
-        startRecording();
-      } else if (status === STATUS.RECORDING) {
+      if (status === STATUS.RECORDING) {
         stopRecording();
+      } else if (status !== STATUS.PROCESSING) {
+        // Allow starting a new recording from IDLE, SUCCESS, or ERROR without
+        // waiting for the status badge to reset. The SUCCESS/ERROR states only
+        // exist as a visual confirmation after a completed transcription.
+        startRecording();
       }
     });
 
@@ -191,6 +214,15 @@ function App() {
 
   const startRecording = useCallback(async () => {
     console.log('[App] Starting recording...');
+
+    // If we were still in the SUCCESS/ERROR badge window from a previous
+    // transcription, cancel that pending "reset to IDLE" so it doesn't fire a
+    // second later and clobber the new RECORDING status.
+    if (resetStatusTimeoutRef.current) {
+      clearTimeout(resetStatusTimeoutRef.current);
+      resetStatusTimeoutRef.current = null;
+    }
+    cancelRequestedRef.current = false;
 
     // Always cleanup previous resources before starting a new recording
     // This prevents the MediaRecorder from being in a corrupted state
@@ -393,17 +425,103 @@ function App() {
         throw new Error('No se grabó audio. Por favor intenta de nuevo.');
       }
 
-      // Stage 1: Converting audio
+      // Silence gate: decode the captured audio and check peak RMS over
+      // 100ms windows. If the loudest window is still below the speech
+      // threshold, skip the API call. This is deterministic (no dependency
+      // on AudioContext state during recording) and catches the typical
+      // hallucinations like "Subtítulos de Amara.org" on silent audio.
+      // Cost: ~30-80ms to decode a few-second clip.
+      if (settings.silenceDetection) {
+        try {
+          const silenceStart = performance.now();
+          const ab = await audioBlob.arrayBuffer();
+          // Clone the buffer because decodeAudioData detaches it and we still
+          // need the original bytes for the upload step below.
+          const abForDecode = ab.slice(0);
+          const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+          let audioBuf;
+          try {
+            audioBuf = await decodeCtx.decodeAudioData(abForDecode);
+          } finally {
+            try { await decodeCtx.close(); } catch (e) {}
+          }
+          const samples = audioBuf.getChannelData(0);
+          const sr = audioBuf.sampleRate;
+          const windowSize = Math.max(1, Math.floor(sr * 0.1)); // 100ms
+          let peakWindowRms = 0;
+          let meanSq = 0;
+          for (let start = 0; start < samples.length; start += windowSize) {
+            const end = Math.min(start + windowSize, samples.length);
+            let sumSq = 0;
+            for (let i = start; i < end; i++) sumSq += samples[i] * samples[i];
+            const rms = Math.sqrt(sumSq / (end - start));
+            if (rms > peakWindowRms) peakWindowRms = rms;
+            meanSq += sumSq;
+          }
+          const overallRms = Math.sqrt(meanSq / samples.length);
+          const threshold = settings.silenceThreshold || 0.025;
+          const elapsed = Math.round(performance.now() - silenceStart);
+          const diagnostic = {
+            peakWindowRms: +peakWindowRms.toFixed(5),
+            overallRms: +overallRms.toFixed(5),
+            threshold,
+            durationSec: +audioBuf.duration.toFixed(2),
+            sampleRate: sr,
+            decodeMs: elapsed,
+            willSkip: peakWindowRms < threshold
+          };
+          console.log('[App] Silence gate:', diagnostic);
+          // Also ship to the file logs so users can tune the threshold from
+          // Configuración → Logs without opening DevTools.
+          window.electronAPI?.logFromRenderer?.({
+            level: 'INFO',
+            tag: 'silence-gate',
+            data: diagnostic
+          });
+          if (peakWindowRms < threshold) {
+            console.log('[App] Silence gate triggered, skipping transcription');
+            setStatus(STATUS.SILENCE_DETECTED);
+            setProcessingStage('');
+            setTimeout(() => setStatus(STATUS.IDLE), 2000);
+            return;
+          }
+        } catch (err) {
+          console.warn('[App] Silence gate decode failed, proceeding with transcription:', err?.message);
+          window.electronAPI?.logFromRenderer?.({
+            level: 'ERROR',
+            tag: 'silence-gate',
+            data: `decode failed: ${err?.message || err}`
+          });
+        }
+      }
+
+      // Stage 1: Preparing audio
       setProcessingStage('Preparando audio...');
 
-      // Convert to WAV to avoid Chromium's corrupted WebM header bug
+      // Fast path (default): send WebM/Opus straight to the API. Saves the
+      // ~200-500ms AudioContext decode+resample+WAV encode AND sends ~10×
+      // fewer bytes over the wire. If Chromium produced a corrupted WebM
+      // header, main.js repairs it via ffmpeg before uploading.
+      //
+      // Safe path (fastUpload off): convert to WAV in the renderer first.
+      // Kept as a toggle in case a user hits a rare encoding issue.
       let arrayBuffer;
-      try {
-        arrayBuffer = await convertToWav(audioBlob);
-        console.log('[App] Using WAV format, size:', arrayBuffer.byteLength);
-      } catch (conversionError) {
-        console.warn('[App] WAV conversion failed, falling back to original format:', conversionError);
-        arrayBuffer = await audioBlob.arrayBuffer();
+      if (settings.fastUpload) {
+        try {
+          arrayBuffer = await audioBlob.arrayBuffer();
+          console.log('[App] Fast upload: sending WebM/Opus directly, size:', arrayBuffer.byteLength, 'type:', audioBlob.type);
+        } catch (err) {
+          console.warn('[App] Fast upload failed, falling back to WAV conversion:', err);
+          arrayBuffer = await convertToWav(audioBlob);
+        }
+      } else {
+        try {
+          arrayBuffer = await convertToWav(audioBlob);
+          console.log('[App] Using WAV format, size:', arrayBuffer.byteLength);
+        } catch (conversionError) {
+          console.warn('[App] WAV conversion failed, falling back to original format:', conversionError);
+          arrayBuffer = await audioBlob.arrayBuffer();
+        }
       }
 
       console.log('[App] ArrayBuffer size:', arrayBuffer.byteLength);
@@ -423,7 +541,8 @@ function App() {
         {
           language: settings.language,
           apiKey: currentOpenAIKey,
-          processingMode: settings.processingMode // verbatim, fast, or smart
+          processingMode: settings.processingMode, // verbatim, fast, or smart
+          transcriptionProvider: settings.transcriptionProvider // 'openai' | 'groq'
         }
       );
 
@@ -433,6 +552,9 @@ function App() {
         // Surface friendly, actionable errors. The main process returns
         // structured error codes; translate them into user-facing messages.
         const code = transcriptionResult.code || transcriptionResult.error;
+        if (code === 'CANCELLED' || transcriptionResult.error === 'cancelled') {
+          throw new Error('cancelled');
+        }
         if (code === 'FREE_TIER_EXHAUSTED' || transcriptionResult.error === 'free_tier_exhausted') {
           throw new Error('Agotaste los 30 minutos gratuitos. Agrega tu API key en Configuración o suscríbete a un plan.');
         }
@@ -452,7 +574,56 @@ function App() {
       let finalText = transcriptionResult.text;
       console.log('[App] Transcribed text:', finalText);
 
-      // Process with AI if smart mode
+      if (cancelRequestedRef.current) throw new Error('cancelled');
+
+      // FIRE-AND-FORGET BRANCH: when instantPaste is on and Smart Mode is
+      // active, we paste the raw Whisper text immediately and let Claude
+      // refine in background. The refined version only updates `lastText`
+      // (and history, when we wire that). The user gets perceived latency
+      // of just (network + compute) instead of (network + Whisper + Claude).
+      const shouldFireAndForget =
+        settings.instantPaste &&
+        settings.processingMode === 'smart' &&
+        !!finalText;
+
+      if (shouldFireAndForget) {
+        setProcessingStage('Pegando texto...');
+        console.log('[App] Instant paste: pasting raw Whisper text...');
+        await window.electronAPI.pasteText(finalText);
+        setLastText(finalText);
+        setProcessingStage('');
+        setStatus(STATUS.SUCCESS);
+
+        const soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+        if (soundEnabled) playCompletionSound();
+
+        if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
+        resetStatusTimeoutRef.current = setTimeout(() => {
+          setStatus(STATUS.IDLE);
+          resetStatusTimeoutRef.current = null;
+        }, 2000);
+
+        // Background refinement (best-effort, errors are silent to the user).
+        // Intentionally no await — this is fire-and-forget.
+        window.electronAPI.processText(finalText, {
+          provider: settings.reasoningProvider,
+          apiKey: currentOpenAIKey,
+          anthropicKey: currentAnthropicKey
+        })
+          .then((res) => {
+            if (res?.success && res.text) {
+              console.log('[App] Background AI refinement complete');
+              setLastText(res.text);
+            } else {
+              console.log('[App] Background AI refinement skipped or failed:', res?.error);
+            }
+          })
+          .catch((err) => console.log('[App] Background AI refinement error:', err?.message));
+
+        return;
+      }
+
+      // Process with AI if smart mode (synchronous path)
       if (settings.processingMode === 'smart' && finalText) {
         // Stage 3: AI Processing
         setProcessingStage('Procesando con IA...');
@@ -471,10 +642,14 @@ function App() {
 
         if (processResult.success) {
           finalText = processResult.text;
+        } else if (processResult.code === 'CANCELLED' || processResult.error === 'cancelled') {
+          throw new Error('cancelled');
         } else {
           console.warn('[App] AI processing failed, using original text');
         }
       }
+
+      if (cancelRequestedRef.current) throw new Error('cancelled');
 
       // Stage 4: Pasting
       setProcessingStage('Pegando texto...');
@@ -494,28 +669,46 @@ function App() {
       }
       console.log('[App] Success!');
 
-      // Reset to idle after 2 seconds
-      setTimeout(() => {
+      // Reset to idle after 2 seconds. Tracked so a new recording started
+      // during this window can cancel it (see startRecording).
+      if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
+      resetStatusTimeoutRef.current = setTimeout(() => {
         setStatus(STATUS.IDLE);
+        resetStatusTimeoutRef.current = null;
       }, 2000);
 
     } catch (error) {
       console.error('[App] Processing error:', error);
       setProcessingStage('');
+
+      // If the user pressed the Cancel (X) button, don't show an error badge.
+      if (cancelRequestedRef.current || error?.message === 'cancelled') {
+        cancelRequestedRef.current = false;
+        setStatus(STATUS.IDLE);
+        setErrorMessage('');
+        return;
+      }
+
       setStatus(STATUS.ERROR);
       setErrorMessage(error.message);
 
       // Reset to idle after 5 seconds on error (longer to read the message)
-      setTimeout(() => {
+      if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
+      resetStatusTimeoutRef.current = setTimeout(() => {
         setStatus(STATUS.IDLE);
         setErrorMessage('');
+        resetStatusTimeoutRef.current = null;
       }, 5000);
     }
   };
 
   // Minimal floating indicator - just a small circle that shows status
   // No click needed - only responds to hotkey (Ctrl+Shift+Space)
-  const handleMouseDown = useCallback(() => {
+  const handleMouseDown = useCallback((e) => {
+    // Only the primary (left) button initiates window drag. Right-click opens
+    // the context menu via onContextMenu; any secondary button should not drag.
+    if (e.button !== 0) return;
+
     window.electronAPI.windowStartDrag();
 
     const handleMouseUp = () => {
@@ -526,33 +719,79 @@ function App() {
     document.addEventListener('mouseup', handleMouseUp);
   }, []);
 
+  const handleContextMenu = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    window.electronAPI?.showFloatingMenu?.();
+  }, []);
+
+  const handleCancelClick = useCallback(async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    console.log('[App] User cancelled in-flight transcription');
+    cancelRequestedRef.current = true;
+    try {
+      await window.electronAPI?.cancelTranscription?.();
+    } catch (err) {
+      console.warn('[App] cancelTranscription call failed:', err);
+    }
+    setProcessingStage('');
+    setStatus(STATUS.IDLE);
+    setIsHoveringIcon(false);
+  }, []);
+
+  const showCancelOverlay = status === STATUS.PROCESSING && isHoveringIcon;
+
   return (
     <div className="w-[60px] h-[60px] flex flex-col items-center justify-center bg-transparent relative">
 
       {/* Minimal status indicator - draggable */}
       <div
         onMouseDown={handleMouseDown}
+        onContextMenu={handleContextMenu}
+        onMouseEnter={() => setIsHoveringIcon(true)}
+        onMouseLeave={() => setIsHoveringIcon(false)}
         className={`
-          w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-grab active:cursor-grabbing
+          relative w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-grab active:cursor-grabbing
           ${status === STATUS.IDLE ? 'bg-slate-700/90 text-slate-400' : ''}
           ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white shadow-red-500/50' : ''}
           ${status === STATUS.PROCESSING ? 'bg-blue-500 text-white shadow-blue-500/50' : ''}
           ${status === STATUS.SUCCESS ? 'bg-green-500 text-white shadow-green-500/50' : ''}
           ${status === STATUS.ERROR ? 'bg-red-600 text-white shadow-red-600/50' : ''}
+          ${status === STATUS.SILENCE_DETECTED ? 'bg-amber-500/90 text-white shadow-amber-500/50' : ''}
         `}
         title={
-          status === STATUS.IDLE ? `Murmullo - Ctrl+Shift+Space para grabar (arrastra para mover)${usageGate ? ` | ${(usageGate.secondsRemaining / 60).toFixed(1)} min restantes de prueba gratuita` : ''}` :
+          status === STATUS.IDLE ? `Murmullo - Ctrl+Shift+Space para grabar (clic derecho para menú)${usageGate ? ` | ${(usageGate.secondsRemaining / 60).toFixed(1)} min restantes de prueba gratuita` : ''}` :
           status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
-          status === STATUS.PROCESSING ? processingStage || 'Procesando...' :
+          status === STATUS.PROCESSING ? `${processingStage || 'Procesando...'} - Haz clic en la X para cancelar` :
           status === STATUS.SUCCESS ? 'Listo' :
+          status === STATUS.SILENCE_DETECTED ? 'No se detectó audio. Verifica que tu micrófono esté activo y hables más alto.' :
           errorMessage || 'Error'
         }
       >
-        {status === STATUS.IDLE && <Mic size={20} />}
-        {status === STATUS.RECORDING && <MicOff size={20} />}
-        {status === STATUS.PROCESSING && <Loader2 size={20} className="animate-spin" />}
-        {status === STATUS.SUCCESS && <Check size={20} />}
-        {status === STATUS.ERROR && <AlertCircle size={20} />}
+        {/* Base status icon - hidden while the cancel overlay is shown so the
+            X replaces the spinner cleanly on hover during PROCESSING. */}
+        {!showCancelOverlay && status === STATUS.IDLE && <Mic size={20} />}
+        {!showCancelOverlay && status === STATUS.RECORDING && <MicOff size={20} />}
+        {!showCancelOverlay && status === STATUS.PROCESSING && <Loader2 size={20} className="animate-spin" />}
+        {!showCancelOverlay && status === STATUS.SUCCESS && <Check size={20} />}
+        {!showCancelOverlay && status === STATUS.ERROR && <AlertCircle size={20} />}
+        {!showCancelOverlay && status === STATUS.SILENCE_DETECTED && <HelpCircle size={20} />}
+
+        {/* Cancel overlay: only visible while hovering during PROCESSING. */}
+        {showCancelOverlay && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={handleCancelClick}
+            onContextMenu={(e) => e.preventDefault()}
+            className="absolute inset-0 flex items-center justify-center rounded-full bg-red-600 text-white cursor-pointer hover:bg-red-700 transition-colors"
+            title="Cancelar envío"
+            aria-label="Cancelar envío"
+          >
+            <X size={22} strokeWidth={3} />
+          </button>
+        )}
       </div>
     </div>
   );

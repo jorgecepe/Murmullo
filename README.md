@@ -2,7 +2,7 @@
 
 **Dictado de voz inteligente para desarrolladores y profesionales hispanohablantes.**
 
-[![Descargar v1.8.0](https://img.shields.io/badge/Descargar-v1.8.0-blue?style=for-the-badge&logo=windows)](https://github.com/jorgecepe/Murmullo/releases/latest)
+[![Descargar v1.9.0-beta.7](https://img.shields.io/badge/Descargar-v1.9.0--beta.7-blue?style=for-the-badge&logo=windows)](https://github.com/jorgecepe/Murmullo/releases/latest)
 
 > Fork de [Open-Whispr](https://github.com/HeroTools/open-whispr) optimizado para español con preservación de términos técnicos.
 
@@ -29,8 +29,13 @@ Los términos técnicos se mantienen en inglés automáticamente.
 - **Dos modos**: Rápido (solo transcripción) o Inteligente (con corrección IA)
 - **Hotkey ergonómico**: `Ctrl+Shift+Space` por defecto (personalizable)
 - **Ícono arrastrable**: Mueve el indicador flotante a donde prefieras
+- **Cancelar envío en hover**: Si la transcripción tarda mucho, pasa el mouse sobre el ícono azul y haz clic en la X para cortar el envío
+- **Menú contextual (clic derecho)**: Abre Configuración, Logs, Acerca de o Salir desde el propio ícono flotante
+- **Encadena grabaciones**: Una nueva grabación puede iniciarse inmediatamente tras finalizar la anterior, sin esperar a que se apague el check verde
 - **Sin privilegios de admin**: Se instala en la carpeta del usuario
-- **Multi-proveedor**: OpenAI Whisper o Claude para post-procesamiento
+- **Multi-proveedor**: OpenAI Whisper o Groq (Whisper v3 Turbo, ~5-10× más rápido) para transcripción; OpenAI o Claude para post-procesamiento
+- **Pegado instantáneo opcional**: pega el texto crudo en cuanto Whisper responde y deja la corrección de IA en segundo plano
+- **Silencio gate**: descarta grabaciones sin voz para evitar alucinaciones y no gastar cuota
 - **Modo Backend**: Usa el servicio en la nube sin necesidad de API keys propias
 - **Auto-actualizaciones**: Recibe updates automáticamente
 - **Indicador de progreso**: Muestra qué está haciendo en cada momento
@@ -41,7 +46,7 @@ Los términos técnicos se mantienen en inglés automáticamente.
 ### Desde Releases (Recomendado)
 
 Descarga el instalador desde [Releases](https://github.com/jorgecepe/Murmullo/releases/latest):
-- **Windows**: `Murmullo-Setup-1.8.0.exe` (instalador) o `Murmullo-Portable-1.8.0.exe` (portable)
+- **Windows**: `Murmullo-Setup-1.9.0-beta.7.exe` (instalador) o `Murmullo-Portable-1.9.0-beta.7.exe` (portable)
 
 **Actualizaciones automáticas**: Murmullo detecta y descarga actualizaciones automáticamente desde la pestaña Configuración > Actualizaciones.
 

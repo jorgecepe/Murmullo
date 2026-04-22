@@ -327,6 +327,16 @@ let secureStorage = null; // Initialized after app is ready
 const rateLimiter = new RateLimiter();
 let usageTracker = null; // Initialized after app is ready
 
+// Abort controllers for in-flight network operations, so the user can cancel
+// a pending transcription / AI post-processing from the floating mic icon.
+const activeAbortControllers = new Set();
+function cancelAllActiveRequests() {
+  for (const ac of activeAbortControllers) {
+    try { ac.abort(); } catch (e) {}
+  }
+  activeAbortControllers.clear();
+}
+
 // Backend mode settings
 let backendMode = false;
 let backendUrl = 'https://murmullo-api.luminaconsulting.ai';
@@ -544,6 +554,11 @@ function electronFetch(url, options = {}) {
 async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   let lastError;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (options.signal?.aborted) {
+      const err = new Error('Operation cancelled');
+      err.name = 'AbortError';
+      throw err;
+    }
     try {
       const response = await electronFetch(url, options);
       // Don't retry for client errors (4xx), only for server errors (5xx) or network issues
@@ -558,6 +573,9 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
       }
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
+      if (error.name === 'AbortError' || options.signal?.aborted) {
+        throw error;
+      }
       lastError = error;
       if (attempt < maxRetries - 1) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
@@ -662,7 +680,8 @@ async function transcribeViaBackend(audioData, options = {}) {
       audio: base64Audio,
       language: options.language || 'es',
       model: 'whisper-1'
-    })
+    }),
+    signal: options.signal
   });
 
   return data;
@@ -678,7 +697,8 @@ async function processTextViaBackend(text, options = {}) {
       text,
       provider: options.provider || 'anthropic',
       model: options.model
-    })
+    }),
+    signal: options.signal
   });
 
   return data;
@@ -1186,6 +1206,14 @@ function setupIpcHandlers() {
       return { success: false, error: validation.error };
     }
 
+    // Track this request so it can be cancelled from the floating mic icon.
+    const abortController = new AbortController();
+    activeAbortControllers.add(abortController);
+    const abortSignal = abortController.signal;
+    const cleanupAbort = () => activeAbortControllers.delete(abortController);
+
+    try {
+
     const processingMode = options?.processingMode || 'fast'; // verbatim, fast, or smart
     log('=== TRANSCRIBE AUDIO START ===');
     log('Audio data length:', audioData?.length || 0);
@@ -1228,7 +1256,7 @@ function setupIpcHandlers() {
     if (backendMode && backendAccessToken) {
       try {
         const startTime = Date.now();
-        const result = await transcribeViaBackend(audioData, options);
+        const result = await transcribeViaBackend(audioData, { ...options, signal: abortSignal });
         const elapsedTime = Date.now() - startTime;
 
         // Apply list formatting only if NOT verbatim mode
@@ -1256,6 +1284,10 @@ function setupIpcHandlers() {
 
         return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true, processingMode };
       } catch (error) {
+        if (error.name === 'AbortError' || abortSignal.aborted) {
+          log('Backend transcription cancelled by user');
+          return { success: false, error: 'cancelled', code: 'CANCELLED' };
+        }
         logError('Backend transcription failed:', error.message);
         // If backend fails, we could fall back to local mode, but for now return error
         return { success: false, error: `Backend error: ${error.message}` };
@@ -1263,14 +1295,31 @@ function setupIpcHandlers() {
     }
 
     try {
-      // Get API key from secure storage, then options, then env
-      const apiKey = secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY;
+      // Pick transcription provider. Groq serves an OpenAI-compatible endpoint
+      // running Whisper Large v3 Turbo much faster than OpenAI. Default stays
+      // on 'openai' so existing users don't see a behavior change until they
+      // opt in from Configuración.
+      const transcriptionProvider = options?.transcriptionProvider === 'groq' ? 'groq' : 'openai';
+      const apiKey = transcriptionProvider === 'groq'
+        ? (secureStorage?.getSecure('groq_api_key') || options?.groqApiKey || process.env.GROQ_API_KEY)
+        : (secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY);
+      const whisperEndpoint = transcriptionProvider === 'groq'
+        ? 'https://api.groq.com/openai/v1/audio/transcriptions'
+        : 'https://api.openai.com/v1/audio/transcriptions';
+      const whisperModel = transcriptionProvider === 'groq'
+        ? (options?.groqModel || 'whisper-large-v3-turbo')
+        : 'whisper-1';
+      log('Transcription provider:', transcriptionProvider, 'model:', whisperModel);
       log('API key present:', !!apiKey);
       log('API key length:', apiKey?.length || 0);
       // Don't log API key prefix for security
 
       if (!apiKey) {
-        throw new Error('OpenAI API key not configured. Please add it in Settings.');
+        throw new Error(
+          transcriptionProvider === 'groq'
+            ? 'Groq API key not configured. Please add it in Configuración → API Keys.'
+            : 'OpenAI API key not configured. Please add it in Settings.'
+        );
       }
 
       if (!audioData || audioData.length === 0) {
@@ -1436,14 +1485,21 @@ function setupIpcHandlers() {
       parts.push(
         `--${boundary}${CRLF}`,
         `Content-Disposition: form-data; name="model"${CRLF}${CRLF}`,
-        `whisper-1${CRLF}`
+        `${whisperModel}${CRLF}`
       );
 
       // Language part
+      // Groq doesn't support language: 'auto', so map it to 'es' (default for Murmullo)
+      // OpenAI Whisper supports 'auto' for language detection
+      let languageCode = options?.language || 'es';
+      if (transcriptionProvider === 'groq' && languageCode === 'auto') {
+        log('Groq does not support auto language detection, defaulting to Spanish');
+        languageCode = 'es';
+      }
       parts.push(
         `--${boundary}${CRLF}`,
         `Content-Disposition: form-data; name="language"${CRLF}${CRLF}`,
-        `${options?.language || 'es'}${CRLF}`
+        `${languageCode}${CRLF}`
       );
 
       // Prompt part - helps anchor Whisper and reduce hallucinations
@@ -1477,13 +1533,14 @@ function setupIpcHandlers() {
 
       log('Sending to Whisper API...', uploadFilename, 'body size:', bodyBuffer.length);
 
-      const response = await fetchWithRetry('https://api.openai.com/v1/audio/transcriptions', {
+      const response = await fetchWithRetry(whisperEndpoint, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': `multipart/form-data; boundary=${boundary}`
         },
-        body: bodyBuffer
+        body: bodyBuffer,
+        signal: abortSignal
       }, 3); // Retry up to 3 times
 
       log('Whisper API response status:', response.status);
@@ -1545,7 +1602,14 @@ function setupIpcHandlers() {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
       logError('Error:', error.message);
       logError('Stack:', error.stack);
+      if (error.name === 'AbortError' || abortSignal.aborted) {
+        return { success: false, error: 'cancelled', code: 'CANCELLED' };
+      }
       return { success: false, error: error.message };
+    }
+
+    } finally {
+      cleanupAbort();
     }
   });
 
@@ -1570,6 +1634,14 @@ function setupIpcHandlers() {
       };
     }
 
+    // Track this request so the user can cancel the AI post-processing step.
+    const abortController = new AbortController();
+    activeAbortControllers.add(abortController);
+    const abortSignal = abortController.signal;
+    const cleanupAbort = () => activeAbortControllers.delete(abortController);
+
+    try {
+
     // Sanitize text input
     const sanitizedText = sanitizeString(text, 50000); // Max 50k chars
 
@@ -1582,7 +1654,7 @@ function setupIpcHandlers() {
     if (backendMode && backendAccessToken) {
       try {
         const startTime = Date.now();
-        const result = await processTextViaBackend(sanitizedText, options);
+        const result = await processTextViaBackend(sanitizedText, { ...options, signal: abortSignal });
         const aiLatency = Date.now() - startTime;
 
         log('=== BACKEND PROCESS TEXT SUCCESS ===');
@@ -1598,6 +1670,10 @@ function setupIpcHandlers() {
 
         return { success: true, text: result.text, latencyMs: aiLatency, viaBackend: true };
       } catch (error) {
+        if (error.name === 'AbortError' || abortSignal.aborted) {
+          log('Backend AI processing cancelled by user');
+          return { success: false, error: 'cancelled', code: 'CANCELLED' };
+        }
         logError('Backend text processing failed:', error.message);
         return { success: false, error: `Backend error: ${error.message}` };
       }
@@ -1659,7 +1735,8 @@ Output el texto completo corregido, sin comillas.`;
             'x-api-key': apiKey,
             'anthropic-version': '2023-06-01'
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: abortSignal
         }, 3);
 
         const aiLatency = Date.now() - aiStartTime;
@@ -1710,7 +1787,8 @@ Output el texto completo corregido, sin comillas.`;
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: abortSignal
         }, 3);
 
         log('OpenAI response status:', response.status);
@@ -1728,9 +1806,69 @@ Output el texto completo corregido, sin comillas.`;
 
       throw new Error(`Unknown provider: ${provider}`);
     } catch (error) {
+      if (error.name === 'AbortError' || abortSignal.aborted) {
+        log('AI processing cancelled by user');
+        return { success: false, error: 'cancelled', code: 'CANCELLED' };
+      }
       logError('Process text error:', error.message);
       return { success: false, error: error.message };
     }
+
+    } finally {
+      cleanupAbort();
+    }
+  });
+
+  // Read the user's clipboard text on demand. Chromium disables the "Paste"
+  // item in the native context menu for `<input type="password">` as a
+  // security measure, which leaves no obvious way to paste API keys into the
+  // settings UI. A dedicated "Pegar" button in the renderer calls this IPC,
+  // so paste requires an explicit user gesture.
+  ipcMain.handle('read-clipboard', () => {
+    try {
+      const text = clipboard.readText() || '';
+      return { success: true, text };
+    } catch (err) {
+      logError('read-clipboard failed:', err.message);
+      return { success: false, error: err.message, text: '' };
+    }
+  });
+
+  // Bridge structured log lines from the renderer to the main-process file
+  // logs so users can inspect them in Configuración → Logs. Useful for
+  // instrumenting things like the silence gate without forcing users to open
+  // DevTools. The renderer is trusted code we wrote, but we still keep this
+  // cheap and validate the payload shape.
+  ipcMain.handle('log-from-renderer', (event, payload) => {
+    try {
+      if (!payload || typeof payload !== 'object') return { success: false };
+      const level = typeof payload.level === 'string' ? payload.level.slice(0, 16) : 'INFO';
+      const tag = typeof payload.tag === 'string' ? payload.tag.slice(0, 64) : 'renderer';
+      const data = payload.data;
+      const safeData = typeof data === 'string'
+        ? data.slice(0, 1000)
+        : (() => { try { return JSON.stringify(data).slice(0, 1000); } catch { return '[unserializable]'; } })();
+      if (level === 'ERROR') logError(`[renderer:${tag}]`, safeData);
+      else log(`[renderer:${tag}]`, safeData);
+      return { success: true };
+    } catch (err) {
+      logError('log-from-renderer failed:', err.message);
+      return { success: false };
+    }
+  });
+
+  // Cancel any in-flight transcription / AI post-processing request. Called
+  // from the floating mic icon's hover "X" button. Aborts fetches so the user
+  // does not have to wait for stuck network calls to time out.
+  ipcMain.handle('cancel-transcription', () => {
+    const count = activeAbortControllers.size;
+    if (count > 0) {
+      log(`Cancelling ${count} in-flight request(s) by user request`);
+      cancelAllActiveRequests();
+      logAction('TRANSCRIPTION_CANCELLED');
+      return { success: true, cancelled: count };
+    }
+    return { success: true, cancelled: 0 };
   });
 
   // Paste text (preserves original clipboard content)
@@ -1892,11 +2030,59 @@ Output el texto completo corregido, sin comillas.`;
   ipcMain.handle('show-control-panel', () => {
     log('Showing control panel');
     controlPanel?.show();
+    controlPanel?.focus();
   });
 
   ipcMain.handle('hide-control-panel', () => {
     log('Hiding control panel');
     controlPanel?.hide();
+  });
+
+  // Context menu for the floating mic icon (right-click).
+  // Mirrors the main tray menu but is triggered directly over the floating
+  // window, which is the more discoverable entry point for most users.
+  ipcMain.handle('show-floating-menu', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false };
+
+    const menu = Menu.buildFromTemplate([
+      { label: 'Configuración', click: () => {
+        if (controlPanel && !controlPanel.isDestroyed()) {
+          controlPanel.show();
+          controlPanel.focus();
+        }
+      }},
+      { label: 'Exportar Logs', click: () => {
+        const logsDir = path.join(app.getPath('userData'), 'logs');
+        if (fs.existsSync(logsDir)) {
+          shell.openPath(logsDir);
+          logAction('LOGS_FOLDER_OPENED_FROM_FLOATING_MENU');
+        }
+      }},
+      { type: 'separator' },
+      { label: 'Acerca de Murmullo...', click: () => {
+        const appVersion = app.getVersion();
+        dialog.showMessageBox({
+          type: 'info',
+          title: 'Acerca de Murmullo',
+          message: `Murmullo v${appVersion}`,
+          detail: `Dictado de voz para desarrolladores hispanohablantes.\n\nElectron: ${process.versions.electron}\nNode: ${process.versions.node}\nChrome: ${process.versions.chrome}\nPlataforma: ${process.platform} (${process.arch})\n\nHotkey actual: ${currentHotkey || 'Ctrl+Shift+Space'}`,
+          buttons: ['OK']
+        });
+        logAction('ABOUT_DIALOG_SHOWN_FROM_FLOATING_MENU');
+      }},
+      { type: 'separator' },
+      { label: 'Salir', click: () => {
+        log('User clicked Salir from floating menu');
+        app.isQuitting = true;
+        if (controlPanel && !controlPanel.isDestroyed()) controlPanel.destroy();
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+        if (tray) { tray.destroy(); tray = null; }
+        app.quit();
+      }}
+    ]);
+
+    menu.popup({ window: mainWindow });
+    return { success: true };
   });
 
   // API Keys - get from secure storage (or env as fallback)
@@ -1905,13 +2091,16 @@ Output el texto completo corregido, sin comillas.`;
     // Try secure storage first, then env as fallback
     const openaiKey = secureStorage?.getSecure('openai_api_key') || process.env.OPENAI_API_KEY || '';
     const anthropicKey = secureStorage?.getSecure('anthropic_api_key') || process.env.ANTHROPIC_API_KEY || '';
+    const groqKey = secureStorage?.getSecure('groq_api_key') || process.env.GROQ_API_KEY || '';
 
     return {
       openai: openaiKey,
       anthropic: anthropicKey,
+      groq: groqKey,
       // Include masked versions for UI display
       openaiMasked: openaiKey ? maskApiKey(openaiKey) : '',
-      anthropicMasked: anthropicKey ? maskApiKey(anthropicKey) : ''
+      anthropicMasked: anthropicKey ? maskApiKey(anthropicKey) : '',
+      groqMasked: groqKey ? maskApiKey(groqKey) : ''
     };
   });
 
@@ -1931,7 +2120,11 @@ Output el texto completo corregido, sin comillas.`;
     }
 
     try {
-      const storageKey = provider === 'openai' ? 'openai_api_key' : 'anthropic_api_key';
+      const storageKey = (
+        provider === 'openai' ? 'openai_api_key' :
+        provider === 'groq' ? 'groq_api_key' :
+        'anthropic_api_key'
+      );
       const success = secureStorage.setSecure(storageKey, key);
 
       if (success) {
@@ -1981,6 +2174,13 @@ Output el texto completo corregido, sin comillas.`;
             max_tokens: 1,
             messages: [{ role: 'user', content: 'hi' }]
           }),
+          signal: controller.signal
+        });
+      } else if (provider === 'groq') {
+        // Groq exposes an OpenAI-compatible /models endpoint
+        response = await fetch('https://api.groq.com/openai/v1/models', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${key}` },
           signal: controller.signal
         });
       } else {

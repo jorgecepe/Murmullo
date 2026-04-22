@@ -7,6 +7,134 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.9.0-beta.8] - 2026-04-22
+
+Groq language detection y feedback visual para silencio detectado.
+
+### Corregido
+
+- **Groq rechaza `language: 'auto'`**. Groq's OpenAI-compatible endpoint sólo acepta códigos de idioma específicos (`es`, `en`, etc.), no `auto` para autodeteccion. Cuando la UI enviaba `language: 'auto'`, la API respondía con un error sobre idiomas no soportados. Ahora el main process mapea `auto` a `es` para Groq (el idioma por defecto en Murmullo) mientras que OpenAI sigue recibiendo `auto` como antes.
+
+### Agregado
+
+- **Indicador visual de "No se detectó audio"**. Cuando el silence gate descarta una grabación por falta de sonido, el ícono del micrófono ahora muestra un signo de interrogación (?) en amarillo durante 2 segundos, con tooltip: "No se detectó audio. Verifica que tu micrófono esté activo y hables más alto." Esto distingue claramente el silencio (error del usuario) de otros tipos de error, eliminando la confusión de "por qué nada pasó cuando presioné el micrófono".
+
+---
+
+## [1.9.0-beta.7] - 2026-04-22
+
+Hotfix crítico: las API keys de Groq eran rechazadas silenciosamente al guardar.
+
+### Corregido
+
+- **`isValidApiKey` rechazaba el prefijo `gsk_`**. El validador de formato en `ipcValidation.js` sólo aceptaba keys que empezaran con `sk-` o `sk-ant-`. Las keys de Groq (que empiezan con `gsk_`) fallaban la validación, el IPC `set-api-key` retornaba `{ success: false, error: 'Invalid API key format' }`, y la UI no mostraba nada porque el handler sólo actuaba en el éxito. Regresión introducida en beta.3 cuando agregué el soporte Groq; testeé el endpoint pero no el flujo de guardado. Ahora `gsk_` está en la lista de prefijos aceptados.
+
+- **Errores del guardado eran silenciosos**. Cuando `setApiKey` fallaba por cualquier razón (validación de formato, IPC denegado, storage corrupto), la UI simplemente no hacía nada y el usuario quedaba sin feedback. Ahora el handler del botón Guardar muestra un mensaje rojo "⚠ No se pudo guardar la key: {motivo}" para que cualquier falla de save se vea en pantalla.
+
+---
+
+## [1.9.0-beta.6] - 2026-04-22
+
+UX de la pestaña API Keys rehecha tras reportes de confusión sobre cómo pegar y guardar keys.
+
+### Agregado
+
+- **Botón "Pegar" visible** al lado de cada input de API Key. Resuelve el problema de que Chromium desactiva la opción Pegar del menú contextual nativo sobre `<input type="password">` por razones de seguridad, dejando al usuario sin forma de pegar excepto con Ctrl+V (no siempre evidente). El botón lee el portapapeles vía nueva IPC `read-clipboard` del main process y hace trim de whitespace.
+- **Botón "Mostrar/Ocultar"** (ojo) que alterna el tipo del input entre `password` y `text` para que el usuario pueda verificar visualmente que la key se pegó completa antes de guardar. Se resetea a oculto al guardar.
+- **Botón "Guardar key de forma cifrada"** con texto explícito + ícono Save. Reemplaza el ícono Shield solitario que no se entendía. Mismo estilo visual de botón primario, ahora ancho completo y evidente.
+- **Validación en vivo al guardar**. Después de almacenar, Murmullo hace una llamada de verificación contra el proveedor (`GET /v1/models` para OpenAI/Groq, `POST /v1/messages` de 1 token para Anthropic). El mensaje bajo el campo dice una de cuatro cosas: "Verificando...", "✓ Key guardada y verificada", "⚠ Key guardada pero el proveedor la rechazó (401)", o "Key eliminada". Elimina el bucle "guardé la key pero nada funciona" sin tener que esperar a la primera transcripción.
+
+### Corregido
+
+- La key que estabas pegando se quedaba en el input pero **nunca llegaba a `secureStorage`** si no clickeabas el ícono Shield. El badge mostraba "No configurada" correctamente, pero la UI no lo aclaraba. Con el nuevo botón "Guardar key de forma cifrada" con texto explícito esto queda resuelto.
+
+---
+
+## [1.9.0-beta.5] - 2026-04-22
+
+UX de configuración y observabilidad del silence gate. Motivado por dos reportes: (1) alucinación de "Subtítulos de Amara.org" seguía apareciendo aunque el gate está activo, y (2) no había forma de saber qué API keys estaban guardadas ni cuál estaba siendo realmente usada.
+
+### Agregado
+
+- **Banner "Proveedores activos ahora mismo"** en la pestaña API Keys. Muestra con precisión qué proveedor está procesando la transcripción y el post-procesamiento en este momento, diferenciando entre plan del servidor, Groq (tu key), OpenAI (tu key) o Anthropic (tu key). Si un proveedor fue seleccionado pero no tiene API key guardada, aparece una advertencia.
+
+- **Badges "✓ Guardada" / "— No configurada"** al lado de cada label de API key. Elimina la ambigüedad anterior donde un campo vacío podía ser "no hay key" o "hay key pero no se muestra".
+
+- **Aviso de backend-mode** en el selector "Proveedor de transcripción" (General). Cuando tu plan del servidor está activo, el selector queda deshabilitado y aparece una nota explicando que la elección sólo aplica en modo local/offline. Elimina la confusión de que "seleccionar Groq" parecía no hacer nada.
+
+- **Umbral de silencio configurable**. Slider en Configuración → General (rango 0.005-0.1, step 0.005, default 0.025). Sube el valor si tu mic tiene mucho ruido de fondo y el silencio pasa como audio; bájalo si voces suaves se descartan por error.
+
+- **Instrumentación del silence gate en los logs del archivo**. Nueva IPC `log-from-renderer` que permite al renderer escribir líneas estructuradas en los mismos logs que main (visibles en Configuración → Logs). Cada grabación emite una entrada `silence-gate` con `peakWindowRms`, `overallRms`, `threshold`, `duration`, `sampleRate`, `decodeMs` y `willSkip`. Así el usuario puede calibrar el umbral en base a mediciones reales de su micrófono sin abrir DevTools.
+
+### Cambiado
+
+- **Umbral de silencio por defecto subió de 0.015 a 0.025**. El valor anterior era demasiado bajo para micrófonos con ruido de fondo moderado (ej. laptops con mic integrado, headsets sin noise suppression), lo que hacía que casi cualquier grabación superara el umbral. 0.025 descarta silencio real sin matar voces suaves en la mayoría de mics.
+
+---
+
+## [1.9.0-beta.4] - 2026-04-22
+
+Hotfix sobre beta.3.
+
+### Corregido
+
+- **Silence gate no disparaba**. La implementación original de beta.3 medía el RMS en vivo vía un `AnalyserNode` conectado al MediaStream, pero en Electron el `AudioContext` no pasa a estado `running` sin gesto de usuario (el hotkey global no cuenta), así que `getFloatTimeDomainData` devolvía sólo ceros y la guarda `peakRms > 0` hacía que nunca se activara, dejando pasar grabaciones silenciosas que Whisper alucinaba como "Subtítulos de Amara.org". Reemplazado por una decodificación offline del blob al inicio de `processAudio`: se calcula el RMS sobre ventanas de 100 ms y se toma el pico. Si el pico está bajo 0.015 (ajustable) se salta la llamada a la API. Costo: ~30-80 ms por grabación (aceptable comparado con el ahorro de una llamada fallida). Determinístico, sin dependencia del estado del AudioContext.
+
+---
+
+## [1.9.0-beta.3] - 2026-04-22
+
+Cuatro optimizaciones de velocidad basadas en la investigación del mercado de transcripción rápida. Todas se controlan desde Configuración → General y API Keys.
+
+### Agregado
+
+- **Proveedor de transcripción: Groq (Whisper Large v3 Turbo)**. Alternativa drop-in al `whisper-1` de OpenAI. Misma API compatible, misma calidad de modelo (turbo variant), pero procesado sobre LPUs de Groq a 216× real-time (~5-10× más rápido que OpenAI) y ~9× más barato ($0.04/hr vs $0.36/hr). Requiere Groq API Key propia (gratuita en `console.groq.com/keys`). Ver Configuración → General → "Proveedor de transcripción".
+
+- **Pegado instantáneo (fire-and-forget)**. Nuevo toggle en Configuración → General. Cuando está activo y el modo Smart está seleccionado, Murmullo pega el texto crudo de Whisper apenas llega y lanza la corrección con Claude en segundo plano. Reduce la latencia percibida a sólo (grabación → red → Whisper). La versión pulida se guarda en el historial. Off por defecto para mantener compatibilidad.
+
+- **Subida rápida (WebM/Opus directo)**. Nuevo toggle, on por defecto. Evita el paso de conversión renderer a WAV (AudioContext decode + resample + encode). Ahorra ~200-500 ms por transcripción y reduce ~10× los bytes subidos (640 KB → 60 KB para clip de 20 s). Main.js ya tenía fallback con ffmpeg para reparar headers WebM corruptos, así que el riesgo es bajo.
+
+- **Silencio gate (AnalyserNode peak-RMS)**. Nuevo toggle, on por defecto. Detecta recordings sin voz (hotkey pulsado por error) y salta el envío a Whisper. Evita alucinaciones típicas ("Subtítulos de Amara.org", "Gracias por ver el video") y ahorra minutos del plan gratuito. Umbral fijo 0.01 RMS pico.
+
+### Interno
+
+- `isValidProvider` acepta `'groq'` como provider en IPC validation.
+- `secureStorage` acepta nueva entrada `groq_api_key` (cifrada con la misma protección OS que las demás).
+- `transcribe-audio` IPC handler elige endpoint/model según `options.transcriptionProvider`. El cuerpo multipart y los headers son idénticos para ambos proveedores.
+- CSP ya permitía `api.groq.com` desde beta.0, no requirió cambios.
+
+---
+
+## [1.9.0-beta.2] - 2026-04-22
+
+Hotfix sobre beta.1.
+
+### Corregido
+
+- **Crash en onboarding (`ReferenceError: Zap is not defined`)**. `WelcomeModal.jsx` usaba el ícono `Zap` en dos lugares pero no lo importaba. En dev no se notó porque HMR mantenía el módulo cargado; en el instalador recién instalado, al abrir el onboarding automático tras el setup, el panel se quedaba en la pantalla de error de `ControlPanelErrorBoundary`. Hacer install y abrirlo manualmente funcionaba porque no se disparaba el flujo de onboarding automático.
+
+---
+
+## [1.9.0-beta.1] - 2026-04-22
+
+Iteración de UX sobre el ícono flotante del micrófono, motivada por fricción reportada durante uso diario.
+
+### Agregado
+
+- **Botón Cancelar en el ícono flotante (estado azul)**. Al hacer hover sobre el micrófono mientras está procesando una transcripción (ícono azul), aparece una X roja. Al hacer clic, cancela el envío inmediatamente sin esperar timeouts de red. Útil cuando la API responde lento o cuando hay un problema de conectividad local.
+- **Menú contextual con clic derecho sobre el ícono flotante**. Abre un menú nativo con "Configuración", "Exportar Logs", "Acerca de Murmullo..." y "Salir", replicando las opciones del systray pero directamente sobre el ícono donde la mano del usuario ya está.
+
+### Corregido
+
+- **Bloqueo de 2 segundos tras transcripción exitosa**. El ícono verde (SUCCESS) ahora permite iniciar una nueva grabación inmediatamente con el hotkey, en vez de ignorarlo hasta que el badge se desvanezca. También se limpia la transición pendiente a IDLE para que no sobrescriba la nueva grabación un segundo después. Se aplica la misma mejora al estado de error (rojo).
+
+### Infraestructura
+
+- Cancelación real en `main.js`: `AbortController` por petición, registrado en un `Set` global, cancelable vía IPC `cancel-transcription`. Las fetches a Whisper/Anthropic/OpenAI/backend propagan el `signal` y `fetchWithRetry` respeta el aborto sin reintentar.
+- `preload.js`: nuevos handlers `cancelTranscription()` y `showFloatingMenu()`.
+
+---
+
 ## [1.9.0-beta.0] - 2026-04-14
 
 Primer release de la línea 1.9, enfocado en endurecer Murmullo para distribución pública. **La línea 1.8 sigue siendo estable** (tag `v1.8.0-stable`) y es la recomendada para uso diario mientras se valida 1.9.

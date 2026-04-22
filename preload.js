@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Transcription
   transcribeAudio: (audioData, options) =>
     ipcRenderer.invoke('transcribe-audio', audioData, options),
+  cancelTranscription: () => ipcRenderer.invoke('cancel-transcription'),
 
   // AI Processing
   processText: (text, options) =>
@@ -11,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Clipboard / Paste
   pasteText: (text) => ipcRenderer.invoke('paste-text', text),
+  readClipboard: () => ipcRenderer.invoke('read-clipboard'),
 
   // Settings
   getSetting: (key) => ipcRenderer.invoke('get-setting', key),
@@ -23,6 +25,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Control Panel
   showControlPanel: () => ipcRenderer.invoke('show-control-panel'),
   hideControlPanel: () => ipcRenderer.invoke('hide-control-panel'),
+  showFloatingMenu: () => ipcRenderer.invoke('show-floating-menu'),
 
   // API Keys (secure storage)
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
@@ -35,6 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetUsage: () => ipcRenderer.invoke('reset-usage'),
 
   // Logs
+  logFromRenderer: (payload) => ipcRenderer.invoke('log-from-renderer', payload),
   getLogsPath: () => ipcRenderer.invoke('get-logs-path'),
   listLogFiles: () => ipcRenderer.invoke('list-log-files'),
   readLogFile: (filename) => ipcRenderer.invoke('read-log-file', filename),
