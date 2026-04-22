@@ -26,7 +26,8 @@ router.post('/',
   [
     body('audio').notEmpty().withMessage('Audio data is required'),
     body('language').optional().isIn(['auto', 'es', 'en', 'pt', 'fr', 'de']).withMessage('Invalid language'),
-    body('model').optional().isIn(['whisper-1']).withMessage('Invalid model')
+    body('model').optional().isIn(['whisper-1']).withMessage('Invalid model'),
+    body('provider').optional().isIn(['openai', 'groq']).withMessage('Invalid provider')
   ],
   async (req, res, next) => {
     try {
@@ -35,7 +36,7 @@ router.post('/',
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { audio, language = 'es', model = 'whisper-1' } = req.body;
+      const { audio, language = 'es', model = 'whisper-1', provider } = req.body;
 
       // Decode base64 audio
       let audioBuffer;
@@ -60,8 +61,8 @@ router.post('/',
       const estimatedDuration = estimateAudioDuration(audioBuffer.length);
       const durationMinutes = estimatedDuration / 60;
 
-      // Transcribe audio
-      const result = await transcribeAudio(audioBuffer, { language, model });
+      // Transcribe audio (provider defaults to env var TRANSCRIPTION_PROVIDER)
+      const result = await transcribeAudio(audioBuffer, { language, model, ...(provider && { provider }) });
 
       // Update usage
       await db.incrementUsage(req.user.id, durationMinutes);
@@ -71,7 +72,7 @@ router.post('/',
         userId: req.user.id,
         durationSeconds: estimatedDuration,
         wordCount: result.text.split(/\s+/).length,
-        provider: 'whisper'
+        provider: result.provider || 'openai'
       });
 
       logger.info('Transcription completed', {
@@ -86,6 +87,7 @@ router.post('/',
         metadata: {
           language,
           model,
+          provider: result.provider || 'openai',
           duration_seconds: estimatedDuration,
           latency_ms: result.latency,
           word_count: result.text.split(/\s+/).length

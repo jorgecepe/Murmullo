@@ -3,9 +3,10 @@ import fetch from 'node-fetch';
 import { logger } from '../utils/logger.js';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 
 /**
- * Transcribe audio using OpenAI Whisper API
+ * Transcribe audio using OpenAI Whisper API or Groq
  * @param {Buffer} audioBuffer - Audio data as buffer
  * @param {Object} options - Transcription options
  * @returns {Promise<Object>} - Transcription result
@@ -13,15 +14,32 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/audio/transcriptions';
 export async function transcribeAudio(audioBuffer, options = {}) {
   const {
     language = 'es',
-    model = 'whisper-1',
+    provider = process.env.TRANSCRIPTION_PROVIDER || 'openai',
     responseFormat = 'json',
     // Prompt helps reduce hallucinations by anchoring Whisper to expected content
     prompt = 'Transcripción literal de dictado de voz en español. Transcribir exactamente lo que se dice, palabra por palabra, sin interpretar ni resumir.'
   } = options;
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY not configured');
+  // Select provider and API key
+  let apiUrl, apiKey, model;
+
+  if (provider === 'groq') {
+    apiUrl = GROQ_API_URL;
+    apiKey = process.env.GROQ_API_KEY;
+    model = 'whisper-large-v3-turbo';
+
+    if (!apiKey) {
+      throw new Error('GROQ_API_KEY not configured');
+    }
+  } else {
+    // Default to OpenAI
+    apiUrl = OPENAI_API_URL;
+    apiKey = process.env.OPENAI_API_KEY;
+    model = 'whisper-1';
+
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY not configured');
+    }
   }
 
   const startTime = Date.now();
@@ -34,8 +52,16 @@ export async function transcribeAudio(audioBuffer, options = {}) {
       contentType: 'audio/wav'
     });
     formData.append('model', model);
-    if (language && language !== 'auto') {
-      formData.append('language', language);
+
+    // Groq doesn't support language: 'auto', so map it to 'es'
+    let finalLanguage = language;
+    if (provider === 'groq' && language === 'auto') {
+      logger.info('Groq does not support auto language detection, using es');
+      finalLanguage = 'es';
+    }
+
+    if (finalLanguage && finalLanguage !== 'auto') {
+      formData.append('language', finalLanguage);
     }
     formData.append('response_format', responseFormat);
     // Prompt helps anchor Whisper and reduce hallucinations
@@ -46,7 +72,7 @@ export async function transcribeAudio(audioBuffer, options = {}) {
     formData.append('temperature', '0');
 
     // Make API request
-    const response = await fetch(OPENAI_API_URL, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
@@ -60,6 +86,7 @@ export async function transcribeAudio(audioBuffer, options = {}) {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       logger.error('Whisper API error', {
+        provider,
         status: response.status,
         error: errorData.error?.message || 'Unknown error',
         latency
@@ -70,21 +97,23 @@ export async function transcribeAudio(audioBuffer, options = {}) {
     const result = await response.json();
 
     logger.info('Whisper transcription complete', {
+      provider,
       latency,
       textLength: result.text?.length || 0,
-      language
+      language: finalLanguage
     });
 
     return {
       success: true,
       text: result.text,
-      language,
+      language: finalLanguage,
       latency,
-      model
+      model,
+      provider
     };
 
   } catch (error) {
-    logger.error('Whisper service error', { error: error.message });
+    logger.error('Whisper service error', { error: error.message, provider });
     throw error;
   }
 }

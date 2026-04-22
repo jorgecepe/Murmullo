@@ -5,10 +5,11 @@ Backend API server for Murmullo voice dictation service.
 ## Features
 
 - **Authentication**: JWT-based auth with refresh tokens
-- **Transcription Proxy**: Secure proxy to OpenAI Whisper API
+- **Transcription Proxy**: Secure proxy to OpenAI Whisper or Groq (5-10x faster, 9x cheaper)
 - **AI Processing**: Text correction via Claude/GPT
 - **Usage Tracking**: Per-user usage limits and stats
 - **Rate Limiting**: Protection against abuse
+- **Multi-Provider**: Switch between OpenAI and Groq transcription via environment variable
 
 ## Tech Stack
 
@@ -151,10 +152,40 @@ docker run -d \
 | `NODE_ENV` | Environment | No |
 | `DATABASE_URL` | PostgreSQL URL | Yes |
 | `JWT_SECRET` | JWT signing secret | Yes |
-| `OPENAI_API_KEY` | OpenAI API key | Yes |
-| `ANTHROPIC_API_KEY` | Anthropic API key | Yes |
+| `OPENAI_API_KEY` | OpenAI API key | If using OpenAI for transcription |
+| `ANTHROPIC_API_KEY` | Anthropic API key | Yes (for AI post-processing) |
+| `GROQ_API_KEY` | Groq API key | If using Groq for transcription |
+| `TRANSCRIPTION_PROVIDER` | `openai` or `groq` | No (default: `openai`) |
 | `ADMIN_SECRET` | Secret for admin endpoints | Yes |
 | `CORS_ORIGIN` | Allowed origins | No |
+
+## Transcription Providers
+
+### OpenAI Whisper (Default)
+- Model: `whisper-1`
+- Cost: ~$0.006 per minute
+- Speed: Baseline (reference)
+- Accuracy: Excellent for Spanish with accents
+- Setup: Requires `OPENAI_API_KEY`
+
+### Groq (Recommended for Speed/Cost)
+- Model: `whisper-large-v3-turbo`
+- Cost: ~$0.00067 per minute (9x cheaper)
+- Speed: 5-10x faster than OpenAI
+- Accuracy: Good (native Whisper v3, LPU acceleration)
+- Setup: Requires `GROQ_API_KEY`, set `TRANSCRIPTION_PROVIDER=groq`
+
+**Comparison**: For a 120-minute/month free tier user:
+- OpenAI: ~$0.72/month
+- Groq: ~$0.08/month (90% savings)
+
+To switch providers, update `.env`:
+```bash
+TRANSCRIPTION_PROVIDER=groq
+GROQ_API_KEY=gsk_your_groq_key
+```
+
+Restart the server and all new transcriptions will use Groq. Existing usage limits remain unchanged.
 
 ## Security
 
