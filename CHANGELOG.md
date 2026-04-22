@@ -7,6 +7,40 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.9.0-beta.9] - 2026-04-22
+
+Backend infrastructure: Groq support for server-side transcription without per-user API keys.
+
+### Agregado
+
+- **Backend transcription endpoint** now supports Groq via `TRANSCRIPTION_PROVIDER` env var
+  - Set `TRANSCRIPTION_PROVIDER=groq` in backend `.env` for 9x cost savings
+  - Groq: ~$0.00067/min vs OpenAI ~$0.006/min
+  - Groq: 5-10x faster transcription (LPU acceleration)
+  - Desktop app forwards provider preference to backend (for future per-user selection)
+
+### Actualizado
+
+- **Backend README.md** with provider comparison and deployment instructions
+- **CLAUDE.md** documented Groq provider costs, setup steps, and backend architecture
+- **Backend `.env.example`** includes GROQ_API_KEY and TRANSCRIPTION_PROVIDER defaults
+
+### Notas para deployment
+
+Para activar Groq en tu backend:
+```bash
+cd backend
+# En .env, actualiza:
+TRANSCRIPTION_PROVIDER=groq
+GROQ_API_KEY=gsk_your_groq_key
+# Reinicia el servidor
+npm start
+```
+
+Todos los usuarios del backend automáticamente usarán Groq (sin necesidad de API keys propias).
+
+---
+
 ## [1.9.0-beta.8] - 2026-04-22
 
 Groq language detection y feedback visual para silencio detectado.
