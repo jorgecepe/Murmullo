@@ -1,0 +1,63 @@
+name: Deploy backend to Hetzner
+
+# Manual trigger only. Click "Run workflow" in the Actions tab to deploy.
+# Add `push` triggers here later if you want auto-deploy on every push.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch / tag / commit to deploy (default: current branch)'
+        required: false
+        default: ''
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve ref to deploy
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.ref }}" ]; then
+            echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/id_ed25519_hetzner
+          chmod 600 ~/.ssh/id_ed25519_hetzner
+          ssh-keyscan -p 2200 -H 77.42.27.205 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy to Hetzner
+        env:
+          REF: ${{ steps.resolve.outputs.ref }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519_hetzner -p 2200 root@77.42.27.205 \
+            "set -e; \
+             cd /opt/murmullo && \
+             echo '=== fetching $REF ===' && \
+             git fetch --prune origin && \
+             git checkout -f $REF && \
+             git reset --hard origin/$REF && \
+             echo '=== current commit ===' && \
+             git log --oneline -1 && \
+             echo '=== restarting container ===' && \
+             docker restart murmullo-api && \
+             sleep 5 && \
+             docker ps --filter name=murmullo-api --format 'table {{.Names}}\t{{.Status}}' && \
+             echo '=== logs ===' && \
+             docker logs murmullo-api --tail 15"
+
+      - name: Health check
+        run: |
+          # Wait a bit for the container to fully accept connections
+          sleep 5
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 https://murmullo-api.luminaconsulting.ai/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Health check OK: HTTP 200"
