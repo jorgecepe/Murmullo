@@ -684,12 +684,44 @@ function ControlPanel() {
 
   const handleSettingChange = (key, value) => {
     const newSettings = { ...settings, [key]: value };
+    // Groq's Whisper endpoint does not support language auto-detection. If the
+    // user picks Groq while language='auto', silently downgrade to 'es' and
+    // surface the reason in the UI (warning banner just below the select).
+    if (key === 'transcriptionProvider' && value === 'groq' && newSettings.language === 'auto') {
+      newSettings.language = 'es';
+    }
     setSettings(newSettings);
     autoSaveSettings(newSettings);
   };
 
   const handleApiKeyChange = (key, value) => {
     setApiKeys(prev => ({ ...prev, [key]: value }));
+  };
+
+  // Preview the completion chime so the user can decide whether to leave it on.
+  // Kept in sync with App.jsx playCompletionSound (C5 + E5 sine, ~250ms).
+  const previewCompletionSound = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const audioContext = new Ctx();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime);
+      oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime + 0.1);
+      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.4, audioContext.currentTime + 0.05);
+      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1);
+      gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.25);
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.25);
+      oscillator.onended = () => audioContext.close();
+    } catch (e) {
+      console.log('[ControlPanel] Could not preview completion sound:', e);
+    }
   };
 
   const saveSettings = () => {
@@ -773,8 +805,18 @@ function ControlPanel() {
               >
                 <option value="es">Español</option>
                 <option value="en">English</option>
-                <option value="auto">Auto-detectar</option>
+                <option
+                  value="auto"
+                  disabled={settings.transcriptionProvider === 'groq'}
+                >
+                  Auto-detectar{settings.transcriptionProvider === 'groq' ? ' (no disponible en Groq)' : ''}
+                </option>
               </select>
+              {settings.transcriptionProvider === 'groq' && (
+                <p className="mt-1 text-xs text-amber-400">
+                  Groq no soporta detección automática de idioma; se usará español.
+                </p>
+              )}
             </div>
 
             <div>
@@ -978,18 +1020,28 @@ function ControlPanel() {
                     Reproduce un sonido al terminar una transcripción
                   </p>
                 </div>
-                <button
-                  onClick={() => handleSettingChange('soundEnabled', !settings.soundEnabled)}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    settings.soundEnabled ? 'bg-blue-600' : 'bg-slate-600'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      settings.soundEnabled ? 'translate-x-6' : 'translate-x-1'
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={previewCompletionSound}
+                    className="px-2 py-1 text-xs rounded-md border border-slate-500 text-slate-200 hover:bg-slate-600"
+                    title="Reproducir el sonido de prueba"
+                    type="button"
+                  >
+                    ▶ Probar sonido
+                  </button>
+                  <button
+                    onClick={() => handleSettingChange('soundEnabled', !settings.soundEnabled)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                      settings.soundEnabled ? 'bg-blue-600' : 'bg-slate-600'
                     }`}
-                  />
-                </button>
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                        settings.soundEnabled ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
               </div>
             </div>
 

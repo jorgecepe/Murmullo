@@ -587,41 +587,125 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   throw lastError;
 }
 
-// Make authenticated request to backend
+// Make authenticated request to backend.
+//
+// Wraps the request in:
+// - 30s timeout (AbortSignal.timeout) per attempt: kills long-hanging
+//   ERR_CONNECTION_TIMED_OUT cases that previously sat for 55s+ before the user
+//   cancelled manually.
+// - up to 3 attempts with exponential backoff + jitter (base 500ms) for
+//   network errors and 5xx responses. 4xx is returned immediately.
+// - The original options.signal (user cancellation) is honored alongside the
+//   per-attempt timeout via AbortSignal.any, so we can distinguish a user
+//   cancel from a timeout in the catch site.
 async function backendRequest(endpoint, options = {}) {
   const url = `${getBackendUrl()}${endpoint}`;
 
-  const headers = {
+  const baseHeaders = {
     'Content-Type': 'application/json',
     ...options.headers
   };
 
   if (backendAccessToken) {
-    headers['Authorization'] = `Bearer ${backendAccessToken}`;
+    baseHeaders['Authorization'] = `Bearer ${backendAccessToken}`;
   }
 
-  try {
-    const response = await electronFetch(url, {
-      ...options,
-      headers
-    });
+  const PER_ATTEMPT_TIMEOUT_MS = 30_000;
+  const MAX_ATTEMPTS = 3;
+  let lastError;
 
-    // Handle 401 - try to refresh token
-    if (response.status === 401 && backendRefreshToken) {
-      const refreshed = await refreshBackendToken();
-      if (refreshed) {
-        // Retry with new token
-        headers['Authorization'] = `Bearer ${backendAccessToken}`;
-        const retryResponse = await electronFetch(url, { ...options, headers });
-        return handleBackendResponse(retryResponse);
-      }
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // If the user already cancelled before we even start, surface that first.
+    if (options.signal?.aborted) {
+      const err = new Error('Operation cancelled');
+      err.name = 'AbortError';
+      throw err;
     }
 
-    return handleBackendResponse(response);
-  } catch (error) {
-    logError('Backend request failed:', error.message);
-    throw new Error(`Backend error: ${error.message}`);
+    // Combine user signal with per-attempt timeout so cancel still works.
+    const timeoutSignal = AbortSignal.timeout(PER_ATTEMPT_TIMEOUT_MS);
+    const signals = [timeoutSignal];
+    if (options.signal) signals.push(options.signal);
+    const combinedSignal = (typeof AbortSignal.any === 'function')
+      ? AbortSignal.any(signals)
+      : timeoutSignal; // older runtimes: at least keep the timeout
+
+    try {
+      const response = await electronFetch(url, {
+        ...options,
+        headers: baseHeaders,
+        signal: combinedSignal
+      });
+
+      // Handle 401 - try to refresh token (only once, no need to retry on auth)
+      if (response.status === 401 && backendRefreshToken) {
+        const refreshed = await refreshBackendToken();
+        if (refreshed) {
+          baseHeaders['Authorization'] = `Bearer ${backendAccessToken}`;
+          const retryResponse = await electronFetch(url, {
+            ...options,
+            headers: baseHeaders,
+            signal: combinedSignal
+          });
+          return handleBackendResponse(retryResponse);
+        }
+      }
+
+      // Retry on 5xx server errors only.
+      if (response.status >= 500 && response.status < 600 && attempt < MAX_ATTEMPTS - 1) {
+        const base = 500 * Math.pow(2, attempt);
+        const jitter = Math.floor(Math.random() * 250);
+        const delay = base + jitter;
+        log(`Backend server error ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      return handleBackendResponse(response);
+    } catch (error) {
+      // Distinguish user cancellation from timeout. The user's signal aborts
+      // with name 'AbortError'; AbortSignal.timeout aborts with name
+      // 'TimeoutError' (or 'AbortError' on older runtimes; check user signal
+      // first to disambiguate).
+      const userCancelled = options.signal?.aborted === true;
+      if (userCancelled) {
+        logError('Backend request cancelled by user');
+        const err = new Error('Operation cancelled');
+        err.name = 'AbortError';
+        throw err;
+      }
+
+      const isTimeout = error?.name === 'TimeoutError' ||
+        (error?.name === 'AbortError' && timeoutSignal.aborted);
+
+      lastError = error;
+
+      // Retry on network errors and timeouts; not on 4xx (which is thrown
+      // by handleBackendResponse, not raised as a fetch exception).
+      if (attempt < MAX_ATTEMPTS - 1) {
+        const base = 500 * Math.pow(2, attempt);
+        const jitter = Math.floor(Math.random() * 250);
+        const delay = base + jitter;
+        log(`Backend ${isTimeout ? 'timeout' : 'network error'}: ${error.message}; retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      // Final failure: surface a clear, user-facing message.
+      const finalErr = new Error(
+        isTimeout
+          ? `Backend no respondió en ${PER_ATTEMPT_TIMEOUT_MS / 1000}s tras ${MAX_ATTEMPTS} intentos`
+          : `Backend error: ${error.message}`
+      );
+      finalErr.cause = error;
+      finalErr.code = isTimeout ? 'BACKEND_TIMEOUT' : 'BACKEND_NETWORK';
+      logError('Backend request failed:', finalErr.message);
+      throw finalErr;
+    }
   }
+
+  // Should be unreachable, but keep a guard.
+  throw lastError || new Error('Backend error: unknown failure');
 }
 
 // Handle backend API response
@@ -1270,7 +1354,11 @@ function setupIpcHandlers() {
       }
     }
 
-    // If backend mode is enabled and user is authenticated, use backend
+    // If backend mode is enabled and user is authenticated, use backend.
+    // On NETWORK failure (timeout, connection refused, 5xx) we transparently
+    // fall back to local mode if the user has a local key for the configured
+    // provider. This avoids a hard outage when the backend is down.
+    let backendFallbackActive = false;
     if (backendMode && backendAccessToken) {
       try {
         const startTime = Date.now();
@@ -1307,8 +1395,50 @@ function setupIpcHandlers() {
           return { success: false, error: 'cancelled', code: 'CANCELLED' };
         }
         logError('Backend transcription failed:', error.message);
-        // If backend fails, we could fall back to local mode, but for now return error
-        return { success: false, error: `Backend error: ${error.message}` };
+
+        // Decide whether to fall back. We only fall back on network-class
+        // failures (timeout, connection issues, 5xx). Auth/quota/rate-limit
+        // errors thrown by the backend with .status set in 4xx are NOT
+        // transient and would just fail again locally for unrelated reasons.
+        const isNetworkClass =
+          error?.code === 'BACKEND_TIMEOUT' ||
+          error?.code === 'BACKEND_NETWORK' ||
+          (typeof error?.status === 'number' && error.status >= 500);
+
+        // Choose a local provider the user can actually use. We respect the
+        // configured transcriptionProvider first, then fall back to whichever
+        // key exists.
+        const preferredProvider = options?.transcriptionProvider === 'groq' ? 'groq' : 'openai';
+        const hasOpenAIKey = !!(secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY);
+        const hasGroqKey = !!(secureStorage?.getSecure('groq_api_key') || options?.groqApiKey || process.env.GROQ_API_KEY);
+        const localProvider =
+          (preferredProvider === 'groq' && hasGroqKey) ? 'groq' :
+          (preferredProvider === 'openai' && hasOpenAIKey) ? 'openai' :
+          hasOpenAIKey ? 'openai' :
+          hasGroqKey ? 'groq' :
+          null;
+
+        if (isNetworkClass && localProvider) {
+          logAction('BACKEND_FALLBACK_TO_LOCAL', {
+            reason: error?.code || 'unknown',
+            chosenProvider: localProvider,
+            preferredProvider
+          });
+          log(`Backend failed (${error?.code || error.message}); falling back to local mode with provider=${localProvider}`);
+          backendFallbackActive = true;
+          // Override the provider on options so the local branch uses the
+          // available key. We mutate a shallow copy to avoid touching caller state.
+          options = { ...options, transcriptionProvider: localProvider };
+          // Fall through to the local transcription path below.
+        } else if (isNetworkClass && !localProvider) {
+          return {
+            success: false,
+            error: 'Backend no disponible y no hay API key local configurada. Agrega una en Configuración para no quedarte sin servicio cuando esto pase.',
+            code: 'BACKEND_DOWN_NO_LOCAL_KEY'
+          };
+        } else {
+          return { success: false, error: `Error de backend: ${error.message}` };
+        }
       }
     }
 
@@ -1335,18 +1465,18 @@ function setupIpcHandlers() {
       if (!apiKey) {
         throw new Error(
           transcriptionProvider === 'groq'
-            ? 'Groq API key not configured. Please add it in Configuración → API Keys.'
-            : 'OpenAI API key not configured. Please add it in Settings.'
+            ? 'Groq API key no configurada. Agrégala en Configuración → API Keys.'
+            : 'OpenAI API key no configurada. Agrégala en Configuración → API Keys.'
         );
       }
 
       if (!audioData || audioData.length === 0) {
-        throw new Error('No audio data received');
+        throw new Error('No se recibió audio');
       }
 
       // Check minimum audio size (at least 1KB to be valid)
       if (audioData.length < 1000) {
-        throw new Error(`Audio data too small (${audioData.length} bytes). Please speak longer.`);
+        throw new Error(`Audio demasiado corto (${audioData.length} bytes). Habla por más tiempo.`);
       }
 
       // LATENCY OPTIMIZATION: Skip FFmpeg, send WebM directly to Whisper API
@@ -1566,7 +1696,7 @@ function setupIpcHandlers() {
       if (!response.ok) {
         const errorText = await response.text();
         logError('Whisper API error:', errorText);
-        throw new Error(`Whisper API error: ${errorText}`);
+        throw new Error(`Error de Whisper API: ${errorText}`);
       }
 
       const result = await response.json();
@@ -1611,11 +1741,19 @@ function setupIpcHandlers() {
         latencyMs: elapsedTime,
         audioSizeKB: Math.round(audioData.length / 1024),
         listFormatted: formattedText !== result.text,
-        processingMode
+        processingMode,
+        viaFallback: backendFallbackActive
       });
 
       const usageAfter = usageTracker?.summary();
-      return { success: true, text: formattedText, latencyMs: elapsedTime, processingMode, usage: usageAfter };
+      return {
+        success: true,
+        text: formattedText,
+        latencyMs: elapsedTime,
+        processingMode,
+        usage: usageAfter,
+        viaBackendFallback: backendFallbackActive || undefined
+      };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
       logError('Error:', error.message);
@@ -1736,7 +1874,7 @@ Output el texto completo corregido, sin comillas.`;
         apiKey = secureStorage?.getSecure('anthropic_api_key') || options?.anthropicKey || process.env.ANTHROPIC_API_KEY;
         log('Using Anthropic, API key present:', !!apiKey);
 
-        if (!apiKey) throw new Error('Anthropic API key not configured');
+        if (!apiKey) throw new Error('Anthropic API key no configurada. Agrégala en Configuración → API Keys.');
 
         endpoint = 'https://api.anthropic.com/v1/messages';
         body = {
@@ -1764,7 +1902,7 @@ Output el texto completo corregido, sin comillas.`;
         if (!response.ok) {
           const error = await response.text();
           logError('Anthropic API error:', error);
-          throw new Error(`Anthropic API error: ${error}`);
+          throw new Error(`Error de Anthropic API: ${error}`);
         }
 
         const result = await response.json();
@@ -1788,7 +1926,7 @@ Output el texto completo corregido, sin comillas.`;
         apiKey = secureStorage?.getSecure('openai_api_key') || options?.apiKey || process.env.OPENAI_API_KEY;
         log('Using OpenAI, API key present:', !!apiKey);
 
-        if (!apiKey) throw new Error('OpenAI API key not configured');
+        if (!apiKey) throw new Error('OpenAI API key no configurada. Agrégala en Configuración → API Keys.');
 
         endpoint = 'https://api.openai.com/v1/chat/completions';
         body = {
@@ -1814,7 +1952,7 @@ Output el texto completo corregido, sin comillas.`;
         if (!response.ok) {
           const error = await response.text();
           logError('OpenAI API error:', error);
-          throw new Error(`OpenAI API error: ${error}`);
+          throw new Error(`Error de OpenAI API: ${error}`);
         }
 
         const result = await response.json();
@@ -1822,7 +1960,7 @@ Output el texto completo corregido, sin comillas.`;
         return { success: true, text: result.choices[0].message.content };
       }
 
-      throw new Error(`Unknown provider: ${provider}`);
+      throw new Error(`Proveedor de IA desconocido: ${provider}`);
     } catch (error) {
       if (error.name === 'AbortError' || abortSignal.aborted) {
         log('AI processing cancelled by user');
@@ -2025,9 +2163,17 @@ Output el texto completo corregido, sin comillas.`;
     try {
       const timestamp = new Date().toISOString();
       db.run(
-        `INSERT INTO transcriptions (timestamp, original_text, processed_text, is_processed, processing_method)
-         VALUES (?, ?, ?, ?, ?)`,
-        [timestamp, data.original_text, data.processed_text || null, data.is_processed ? 1 : 0, data.processing_method || 'none']
+        `INSERT INTO transcriptions (timestamp, original_text, processed_text, is_processed, processing_method, agent_name, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          timestamp,
+          data.original_text,
+          data.processed_text || null,
+          data.is_processed ? 1 : 0,
+          data.processing_method || 'none',
+          data.agent_name || null,
+          data.error || null
+        ]
       );
 
       saveDatabase();

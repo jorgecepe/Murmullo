@@ -49,6 +49,9 @@ function App() {
   // new recording started during the green-check window can cancel it, avoiding
   // the RECORDING state being overwritten back to IDLE a moment later.
   const resetStatusTimeoutRef = useRef(null);
+  // Last raw Whisper output, captured before any AI / paste step. Used so that
+  // if the user cancels mid-paste we can still persist the dictation.
+  const lastWhisperTextRef = useRef(null);
 
 
   // Play completion sound
@@ -101,6 +104,33 @@ function App() {
       showToast('error', errorMessage);
     }
   }, [status, errorMessage, showToast]);
+
+  // Persist a transcription to history. Best-effort: failures here must not
+  // affect the user-visible transcription flow, so we only log on error.
+  // Called from both the synchronous and the instantPaste fire-and-forget
+  // branches, and also when the user cancelled the paste but Whisper succeeded
+  // (we still want the text in History so it isn't lost).
+  const persistTranscription = useCallback(async ({
+    originalText,
+    processedText,
+    processingMethod,
+    agentName,
+    error
+  }) => {
+    if (!originalText) return;
+    try {
+      await window.electronAPI.saveTranscription({
+        original_text: originalText,
+        processed_text: processedText && processedText !== originalText ? processedText : null,
+        is_processed: !!(processedText && processedText !== originalText),
+        processing_method: processingMethod || 'none',
+        agent_name: agentName || null,
+        error: error || null
+      });
+    } catch (e) {
+      console.log('[App] saveTranscription failed:', e?.message);
+    }
+  }, []);
 
   // Cleanup function to properly release audio resources
   const cleanupAudioResources = useCallback(() => {
@@ -572,6 +602,8 @@ function App() {
       }
 
       let finalText = transcriptionResult.text;
+      const originalWhisperText = transcriptionResult.text;
+      lastWhisperTextRef.current = originalWhisperText;
       console.log('[App] Transcribed text:', finalText);
 
       if (cancelRequestedRef.current) throw new Error('cancelled');
@@ -603,6 +635,19 @@ function App() {
           resetStatusTimeoutRef.current = null;
         }, 2000);
 
+        // Persist with the raw text first so History captures the dictation
+        // even if the background refinement never finishes (network drop,
+        // app close). Background refinement updates the row only by inserting
+        // a refined copy; that is acceptable for now.
+        persistTranscription({
+          originalText: originalWhisperText,
+          processedText: null,
+          processingMethod: 'fast',
+          agentName: null,
+          error: null
+        });
+        lastWhisperTextRef.current = null;
+
         // Background refinement (best-effort, errors are silent to the user).
         // Intentionally no await — this is fire-and-forget.
         window.electronAPI.processText(finalText, {
@@ -614,6 +659,13 @@ function App() {
             if (res?.success && res.text) {
               console.log('[App] Background AI refinement complete');
               setLastText(res.text);
+              persistTranscription({
+                originalText: originalWhisperText,
+                processedText: res.text,
+                processingMethod: 'smart',
+                agentName: settings.reasoningProvider,
+                error: null
+              });
             } else {
               console.log('[App] Background AI refinement skipped or failed:', res?.error);
             }
@@ -624,11 +676,14 @@ function App() {
       }
 
       // Process with AI if smart mode (synchronous path)
+      let aiAttempted = false;
+      let aiError = null;
       if (settings.processingMode === 'smart' && finalText) {
         // Stage 3: AI Processing
         setProcessingStage('Procesando con IA...');
 
         console.log('[App] Processing with AI, provider:', settings.reasoningProvider);
+        aiAttempted = true;
         const processResult = await window.electronAPI.processText(
           finalText,
           {
@@ -645,6 +700,7 @@ function App() {
         } else if (processResult.code === 'CANCELLED' || processResult.error === 'cancelled') {
           throw new Error('cancelled');
         } else {
+          aiError = processResult.error || 'AI processing failed';
           console.warn('[App] AI processing failed, using original text');
         }
       }
@@ -669,6 +725,22 @@ function App() {
       }
       console.log('[App] Success!');
 
+      // Save to history. processing_method reflects what we actually applied,
+      // not what was selected: if smart was selected but AI failed, we still
+      // persist with method='fast' (Whisper output passed through formatter)
+      // and stash the AI error in `error` for diagnostics.
+      const appliedMethod =
+        settings.processingMode === 'smart' && aiAttempted && !aiError ? 'smart' :
+        settings.processingMode === 'verbatim' ? 'verbatim' : 'fast';
+      persistTranscription({
+        originalText: originalWhisperText,
+        processedText: finalText,
+        processingMethod: appliedMethod,
+        agentName: appliedMethod === 'smart' ? settings.reasoningProvider : null,
+        error: aiError
+      });
+      lastWhisperTextRef.current = null;
+
       // Reset to idle after 2 seconds. Tracked so a new recording started
       // during this window can cancel it (see startRecording).
       if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
@@ -684,6 +756,18 @@ function App() {
       // If the user pressed the Cancel (X) button, don't show an error badge.
       if (cancelRequestedRef.current || error?.message === 'cancelled') {
         cancelRequestedRef.current = false;
+        // Even on cancel, if Whisper produced text we save it so the user
+        // doesn't lose work they already paid time and quota for.
+        if (lastWhisperTextRef.current) {
+          persistTranscription({
+            originalText: lastWhisperTextRef.current,
+            processedText: null,
+            processingMethod: 'none',
+            agentName: null,
+            error: 'cancelled_by_user'
+          });
+          lastWhisperTextRef.current = null;
+        }
         setStatus(STATUS.IDLE);
         setErrorMessage('');
         return;
@@ -691,6 +775,19 @@ function App() {
 
       setStatus(STATUS.ERROR);
       setErrorMessage(error.message);
+
+      // If Whisper had succeeded but a downstream step failed (paste, AI on
+      // smart mode), keep the dictation in History.
+      if (lastWhisperTextRef.current) {
+        persistTranscription({
+          originalText: lastWhisperTextRef.current,
+          processedText: null,
+          processingMethod: 'none',
+          agentName: null,
+          error: error?.message || 'unknown_error'
+        });
+        lastWhisperTextRef.current = null;
+      }
 
       // Reset to idle after 5 seconds on error (longer to read the message)
       if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
