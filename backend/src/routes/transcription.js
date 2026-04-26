@@ -26,8 +26,11 @@ router.post('/',
   [
     body('audio').notEmpty().withMessage('Audio data is required'),
     body('language').optional().isIn(['auto', 'es', 'en', 'pt', 'fr', 'de']).withMessage('Invalid language'),
-    body('model').optional().isIn(['whisper-1']).withMessage('Invalid model'),
-    body('provider').optional().isIn(['openai', 'groq']).withMessage('Invalid provider')
+    body('model').optional().isIn(['whisper-1', 'whisper-large-v3-turbo', 'whisper-large-v3']).withMessage('Invalid model'),
+    body('provider').optional().isIn(['openai', 'groq']).withMessage('Invalid provider'),
+    // Whisper's prompt field is capped at 224 tokens (~600 chars). We accept
+    // up to 500 chars to leave room for the framing template added downstream.
+    body('dictionaryHint').optional().isString().isLength({ max: 500 }).withMessage('dictionaryHint too long (max 500 chars)')
   ],
   async (req, res, next) => {
     try {
@@ -36,7 +39,7 @@ router.post('/',
         return res.status(400).json({ errors: errors.array() });
       }
 
-      const { audio, language = 'es', model = 'whisper-1', provider } = req.body;
+      const { audio, language = 'es', model, provider, dictionaryHint } = req.body;
 
       // Decode base64 audio
       let audioBuffer;
@@ -62,7 +65,12 @@ router.post('/',
       const durationMinutes = estimatedDuration / 60;
 
       // Transcribe audio (provider defaults to env var TRANSCRIPTION_PROVIDER)
-      const result = await transcribeAudio(audioBuffer, { language, model, ...(provider && { provider }) });
+      const result = await transcribeAudio(audioBuffer, {
+        language,
+        ...(model && { model }),
+        ...(provider && { provider }),
+        ...(dictionaryHint && { dictionaryHint })
+      });
 
       // Update usage
       await db.incrementUsage(req.user.id, durationMinutes);

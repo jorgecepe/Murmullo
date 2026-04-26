@@ -674,14 +674,30 @@ async function transcribeViaBackend(audioData, options = {}) {
   // Convert to base64
   const base64Audio = Buffer.from(audioData).toString('base64');
 
+  // Send the user's custom-dictionary terms as the Whisper "initial prompt"
+  // anchor, matching what local mode does in the `transcribe-audio` handler.
+  // Without this, Whisper has no context for proper nouns, brand names, or
+  // domain jargon, which produces noticeably worse transcriptions.
+  const dictionaryHint = (typeof getDictionaryForWhisperPrompt === 'function')
+    ? (getDictionaryForWhisperPrompt() || '')
+    : '';
+
+  // Pick the right model name for the backend's downstream provider so it
+  // doesn't silently fall back to a generic default. The backend whitelists
+  // these values.
+  const provider = options.transcriptionProvider || null;
+  const model = provider === 'groq'
+    ? (options.groqModel || 'whisper-large-v3-turbo')
+    : 'whisper-1';
+
   const data = await backendRequest('/api/v1/transcription', {
     method: 'POST',
     body: JSON.stringify({
       audio: base64Audio,
       language: options.language || 'es',
-      model: 'whisper-1',
-      // Backend defaults to TRANSCRIPTION_PROVIDER env var, but can be overridden
-      ...(options.transcriptionProvider && { provider: options.transcriptionProvider })
+      model,
+      ...(dictionaryHint && { dictionaryHint }),
+      ...(provider && { provider })
     }),
     signal: options.signal
   });

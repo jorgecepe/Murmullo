@@ -4,53 +4,39 @@ import { logger } from '../utils/logger.js';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
-// Technical terms to preserve in English
-const TECHNICAL_TERMS = [
-  'git', 'commit', 'push', 'pull', 'merge', 'branch', 'checkout', 'rebase', 'stash',
-  'API', 'REST', 'GraphQL', 'webhook', 'endpoint',
-  'frontend', 'backend', 'fullstack', 'middleware',
-  'deploy', 'build', 'npm', 'yarn', 'webpack', 'vite',
-  'React', 'Vue', 'Angular', 'Node', 'Express',
-  'Docker', 'Kubernetes', 'container', 'pod',
-  'SQL', 'NoSQL', 'MongoDB', 'PostgreSQL', 'Redis',
-  'AWS', 'Azure', 'GCP', 'serverless', 'lambda',
-  'CI/CD', 'pipeline', 'Jenkins', 'GitHub Actions',
-  'test', 'unit test', 'integration test', 'mock',
-  'debug', 'log', 'error', 'exception', 'stack trace',
-  'async', 'await', 'promise', 'callback',
-  'JSON', 'XML', 'YAML', 'CSV',
-  'HTTP', 'HTTPS', 'SSL', 'TLS',
-  'token', 'JWT', 'OAuth', 'auth',
-  'cache', 'CDN', 'proxy', 'load balancer'
-];
+// IMPORTANT: This prompt MUST stay in sync with the local-mode prompt in
+// main.js (search for `const systemPrompt = ` inside the `process-text`
+// IPC handler). Both modes must produce identical AI corrections so the
+// commercial backend offering matches the local experience the user
+// validated. If you change one, change the other.
+const SYSTEM_PROMPT = `Eres un corrector de transcripciones de voz. Tu trabajo es PRESERVAR TODO el contenido y solo hacer correcciones mínimas.
 
-const SYSTEM_PROMPT = `Eres un corrector ortográfico LITERAL para desarrolladores hispanohablantes.
+REGLA PRINCIPAL: NO ELIMINES NADA. Todo lo que el usuario dijo debe aparecer en tu respuesta.
 
-REGLAS ESTRICTAS - DEBES SEGUIRLAS AL PIE DE LA LETRA:
+CORRECCIONES PERMITIDAS:
+- Agregar tildes donde falten
+- Agregar puntuación (comas, puntos)
+- Mantener términos técnicos en inglés: git, commit, push, pull, API, deploy, etc.
 
-1. SOLO corrige errores ortográficos OBVIOS (tildes, letras faltantes)
-2. SOLO agrega puntuación básica (puntos, comas donde sea gramaticalmente necesario)
-3. MANTÉN en inglés los términos técnicos: ${TECHNICAL_TERMS.slice(0, 30).join(', ')}, etc.
-4. NUNCA cambies el significado o sentido de ninguna frase
-5. NUNCA agregues, elimines, resumas o parafrasees contenido
-6. NUNCA interpretes la intención del usuario
-7. NUNCA expandas abreviaciones o completes ideas
-8. NUNCA cambies sinónimos (ej: "fondos" NO debe convertirse en "estrategia")
-9. Si no estás 100% seguro de una corrección, NO LA HAGAS
+FORMATEO DE LISTAS (solo si hay números explícitos como "1, 2, 3" o "uno, dos, tres"):
+- Convierte "1. texto 2. texto 3. texto" en formato de lista con saltos de línea
+- PERO mantén el texto que viene ANTES y DESPUÉS de la lista
 
-PROHIBIDO ABSOLUTAMENTE:
-- Cambiar "fondos de inversión" por "estrategia de inversión"
-- Cambiar "riesgos" por "manejo de riesgos"
-- Interpretar listas o expandir contenido
-- Agregar palabras que el usuario no dijo
+EJEMPLO:
+Input: "Bueno aquí va mi lista 1 manzanas 2 peras 3 uvas y eso sería todo"
+Output: "Bueno, aquí va mi lista:
+1. Manzanas
+2. Peras
+3. Uvas
+Y eso sería todo."
 
-Responde ÚNICAMENTE con el texto corregido. Sin explicaciones.
+PROHIBIDO:
+- Eliminar oraciones o frases
+- Cambiar sinónimos (acá→aquí, solo→solamente)
+- Responder preguntas
+- Agregar contenido que el usuario no dijo
 
-Ejemplos correctos:
-- "nesesito hacer un comit" → "Necesito hacer un commit."
-- "el deploy fallo" → "El deploy falló."
-- "uno dos tres" → "Uno, dos, tres."
-- "fondos de inversion y riesgos" → "Fondos de inversión y riesgos."`;
+Output el texto completo corregido, sin comillas.`;
 
 /**
  * Process text with Claude (Anthropic)
