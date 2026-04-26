@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session, net, powerMonitor } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Tray, Menu, nativeImage, shell, dialog, safeStorage, session, net, powerMonitor, Notification } = require('electron');
 const path = require('path');
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
@@ -722,33 +722,50 @@ async function handleBackendResponse(response) {
   return data;
 }
 
-// Refresh backend access token
-async function refreshBackendToken() {
-  try {
-    const response = await electronFetch(`${getBackendUrl()}/api/v1/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken: backendRefreshToken })
-    });
+// Refresh backend access token. Concurrent callers (e.g. transcription +
+// AI processing both racing on a 401) MUST share the in-flight request,
+// otherwise the second caller would post the now-rotated refresh token, the
+// server would reject it, and we'd nuke the just-refreshed credentials. The
+// singleton promise below serializes the refresh; followers await the same
+// result. (cycle 2 H-207)
+let refreshInProgress = null;
 
-    if (!response.ok) {
+async function refreshBackendToken() {
+  if (refreshInProgress) {
+    return refreshInProgress;
+  }
+
+  refreshInProgress = (async () => {
+    try {
+      const response = await electronFetch(`${getBackendUrl()}/api/v1/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: backendRefreshToken })
+      });
+
+      if (!response.ok) {
+        backendAccessToken = null;
+        backendRefreshToken = null;
+        saveBackendSettings();
+        return false;
+      }
+
+      const data = await response.json();
+      backendAccessToken = data.tokens.accessToken;
+      backendRefreshToken = data.tokens.refreshToken;
+      saveBackendSettings();
+      return true;
+    } catch (error) {
       backendAccessToken = null;
       backendRefreshToken = null;
       saveBackendSettings();
       return false;
+    } finally {
+      refreshInProgress = null;
     }
+  })();
 
-    const data = await response.json();
-    backendAccessToken = data.tokens.accessToken;
-    backendRefreshToken = data.tokens.refreshToken;
-    saveBackendSettings();
-    return true;
-  } catch (error) {
-    backendAccessToken = null;
-    backendRefreshToken = null;
-    saveBackendSettings();
-    return false;
-  }
+  return refreshInProgress;
 }
 
 // Transcribe via backend
@@ -867,6 +884,16 @@ async function initDatabase() {
       db.run('CREATE INDEX IF NOT EXISTS idx_timestamp ON transcriptions(timestamp DESC)');
     } catch (e) {}
 
+    // Add `transport` column for cycle 2 H-212. Defensive: ALTER TABLE will
+    // throw on existing schemas if the column already exists, but on first
+    // run after upgrade we want to add it. Wrapping in try/catch covers both.
+    try {
+      db.run('ALTER TABLE transcriptions ADD COLUMN transport TEXT DEFAULT NULL');
+      log('Added transport column to transcriptions');
+    } catch (e) {
+      // Column already exists; safe to ignore.
+    }
+
     saveDatabase();
     console.log('Database initialized at:', dbPath);
   } catch (err) {
@@ -874,12 +901,42 @@ async function initDatabase() {
   }
 }
 
-function saveDatabase() {
-  if (db && dbPath) {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(dbPath, buffer);
+// Debounced disk write. db.export() + writeFileSync are O(N) over the whole
+// database, so coalescing bursts (a fast-mode dictation triggers an INSERT
+// then an UPDATE within ~1s) keeps the renderer responsive. Flush is forced
+// on app quit so we never drop the last save.
+let saveDbTimeout = null;
+const SAVE_DB_DEBOUNCE_MS = 500;
+
+function flushDatabaseSync() {
+  if (saveDbTimeout) {
+    clearTimeout(saveDbTimeout);
+    saveDbTimeout = null;
   }
+  if (db && dbPath) {
+    try {
+      const data = db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(dbPath, buffer);
+    } catch (err) {
+      logError('Database flush failed:', err.message);
+    }
+  }
+}
+
+function saveDatabase() {
+  if (!db || !dbPath) return;
+  if (saveDbTimeout) clearTimeout(saveDbTimeout);
+  saveDbTimeout = setTimeout(() => {
+    saveDbTimeout = null;
+    try {
+      const data = db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(dbPath, buffer);
+    } catch (err) {
+      logError('Database save failed:', err.message);
+    }
+  }, SAVE_DB_DEBOUNCE_MS);
 }
 
 function createMainWindow() {
@@ -1355,10 +1412,12 @@ function setupIpcHandlers() {
     }
 
     // If backend mode is enabled and user is authenticated, use backend.
-    // On NETWORK failure (timeout, connection refused, 5xx) we transparently
-    // fall back to local mode if the user has a local key for the configured
-    // provider. This avoids a hard outage when the backend is down.
+    // On NETWORK failure (timeout, connection refused, 5xx) or AUTH_EXPIRED
+    // (401 after refresh failed) we transparently fall back to local mode if
+    // the user has a local key for the configured provider. This avoids a
+    // hard outage when the backend is down or the session has died.
     let backendFallbackActive = false;
+    let backendFallbackReason = null;
     if (backendMode && backendAccessToken) {
       try {
         const startTime = Date.now();
@@ -1388,7 +1447,7 @@ function setupIpcHandlers() {
           processingMode
         });
 
-        return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true, processingMode };
+        return { success: true, text: formattedText, latencyMs: elapsedTime, viaBackend: true, processingMode, transport: 'backend' };
       } catch (error) {
         if (error.name === 'AbortError' || abortSignal.aborted) {
           log('Backend transcription cancelled by user');
@@ -1396,14 +1455,25 @@ function setupIpcHandlers() {
         }
         logError('Backend transcription failed:', error.message);
 
-        // Decide whether to fall back. We only fall back on network-class
-        // failures (timeout, connection issues, 5xx). Auth/quota/rate-limit
-        // errors thrown by the backend with .status set in 4xx are NOT
+        // Decide whether to fall back. We fall back on:
+        //  - network-class failures (timeout, connection issues, 5xx)
+        //  - 401 *after the refresh path already cleared the tokens*, i.e.
+        //    the user's session is dead and the backend is no use to them
+        //    until they log in again. This is the H-201 case missed in cycle 1:
+        //    a user with a valid local key was getting "Error de backend: HTTP 401"
+        //    instead of transparent fallback. (cycle 2 H-201)
+        // Auth/quota/rate-limit errors with active credentials are NOT
         // transient and would just fail again locally for unrelated reasons.
         const isNetworkClass =
           error?.code === 'BACKEND_TIMEOUT' ||
           error?.code === 'BACKEND_NETWORK' ||
           (typeof error?.status === 'number' && error.status >= 500);
+
+        const isAuthExpired =
+          error?.status === 401 && !backendAccessToken;
+
+        const shouldTryLocal = isNetworkClass || isAuthExpired;
+        const fallbackReason = isAuthExpired ? 'auth_expired' : (error?.code || 'unknown');
 
         // Choose a local provider the user can actually use. We respect the
         // configured transcriptionProvider first, then fall back to whichever
@@ -1418,23 +1488,26 @@ function setupIpcHandlers() {
           hasGroqKey ? 'groq' :
           null;
 
-        if (isNetworkClass && localProvider) {
+        if (shouldTryLocal && localProvider) {
           logAction('BACKEND_FALLBACK_TO_LOCAL', {
-            reason: error?.code || 'unknown',
+            reason: fallbackReason,
             chosenProvider: localProvider,
             preferredProvider
           });
-          log(`Backend failed (${error?.code || error.message}); falling back to local mode with provider=${localProvider}`);
+          log(`Backend failed (${fallbackReason}); falling back to local mode with provider=${localProvider}`);
           backendFallbackActive = true;
+          backendFallbackReason = fallbackReason;
           // Override the provider on options so the local branch uses the
           // available key. We mutate a shallow copy to avoid touching caller state.
           options = { ...options, transcriptionProvider: localProvider };
           // Fall through to the local transcription path below.
-        } else if (isNetworkClass && !localProvider) {
+        } else if (shouldTryLocal && !localProvider) {
           return {
             success: false,
-            error: 'Backend no disponible y no hay API key local configurada. Agrega una en Configuración para no quedarte sin servicio cuando esto pase.',
-            code: 'BACKEND_DOWN_NO_LOCAL_KEY'
+            error: isAuthExpired
+              ? 'Tu sesión expiró y no hay API key local configurada. Vuelve a iniciar sesión o agrega una key en Configuración para no perder servicio cuando esto ocurra.'
+              : 'Backend no disponible y no hay API key local configurada. Agrega una en Configuración para no perder servicio cuando esto ocurra.',
+            code: isAuthExpired ? 'AUTH_EXPIRED_NO_LOCAL_KEY' : 'BACKEND_DOWN_NO_LOCAL_KEY'
           };
         } else {
           return { success: false, error: `Error de backend: ${error.message}` };
@@ -1742,17 +1815,21 @@ function setupIpcHandlers() {
         audioSizeKB: Math.round(audioData.length / 1024),
         listFormatted: formattedText !== result.text,
         processingMode,
-        viaFallback: backendFallbackActive
+        viaFallback: backendFallbackActive,
+        fallbackReason: backendFallbackReason
       });
 
       const usageAfter = usageTracker?.summary();
+      const transport = backendFallbackActive ? 'local-fallback' : 'local';
       return {
         success: true,
         text: formattedText,
         latencyMs: elapsedTime,
         processingMode,
         usage: usageAfter,
-        viaBackendFallback: backendFallbackActive || undefined
+        viaBackendFallback: backendFallbackActive || undefined,
+        fallbackReason: backendFallbackReason || undefined,
+        transport
       };
     } catch (error) {
       logError('=== TRANSCRIBE AUDIO ERROR ===');
@@ -2163,8 +2240,8 @@ Output el texto completo corregido, sin comillas.`;
     try {
       const timestamp = new Date().toISOString();
       db.run(
-        `INSERT INTO transcriptions (timestamp, original_text, processed_text, is_processed, processing_method, agent_name, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO transcriptions (timestamp, original_text, processed_text, is_processed, processing_method, agent_name, error, transport)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           timestamp,
           data.original_text,
@@ -2172,7 +2249,8 @@ Output el texto completo corregido, sin comillas.`;
           data.is_processed ? 1 : 0,
           data.processing_method || 'none',
           data.agent_name || null,
-          data.error || null
+          data.error || null,
+          data.transport || null
         ]
       );
 
@@ -2187,6 +2265,86 @@ Output el texto completo corregido, sin comillas.`;
     } catch (error) {
       logError('Database insert error:', error);
       return { success: false, error: error.message };
+    }
+  });
+
+  // Update an existing transcription row. Used by the instant-paste flow:
+  // we INSERT a "fast" row when Whisper finishes so History never loses the
+  // dictation, then UPDATE the same row with the AI-refined text once the
+  // background reasoning call returns. This replaces the previous behavior
+  // of inserting a second row, which double-counted Stats and inflated
+  // History (cycle 2 H-202).
+  ipcMain.handle('update-transcription', (event, data) => {
+    const validation = validateIpcMessage('update-transcription', data);
+    if (!validation.isValid) {
+      logError('Update-transcription validation failed:', validation.error);
+      return { success: false, error: validation.error };
+    }
+
+    if (!db) return { success: false, error: 'Database not initialized' };
+
+    try {
+      // Build an update only over the fields the caller sent, so we don't
+      // accidentally clobber columns set on the original INSERT (timestamp,
+      // original_text, error from cancel paths, etc.).
+      const sets = [];
+      const values = [];
+
+      if (data.processed_text !== undefined) {
+        sets.push('processed_text = ?');
+        values.push(data.processed_text || null);
+        // If we're attaching processed text, the row is now "processed".
+        sets.push('is_processed = ?');
+        values.push(data.processed_text ? 1 : 0);
+      }
+      if (data.processing_method !== undefined) {
+        sets.push('processing_method = ?');
+        values.push(data.processing_method || 'none');
+      }
+      if (data.agent_name !== undefined) {
+        sets.push('agent_name = ?');
+        values.push(data.agent_name || null);
+      }
+      if (data.transport !== undefined) {
+        sets.push('transport = ?');
+        values.push(data.transport || null);
+      }
+
+      if (sets.length === 0) {
+        return { success: false, error: 'No fields to update' };
+      }
+
+      values.push(data.id);
+      db.run(
+        `UPDATE transcriptions SET ${sets.join(', ')} WHERE id = ?`,
+        values
+      );
+      saveDatabase();
+
+      log('Transcription updated, ID:', data.id, 'fields:', sets.length);
+      return { success: true, id: data.id };
+    } catch (error) {
+      logError('Database update error:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Native OS notification, used by the renderer when it needs to surface
+  // a transient warning that wouldn't fit in the 60x60 floating window
+  // (e.g. "Backend caído, usando modo local"). Title and body are sanitized
+  // strings; we only allow our own renderer to call this via the preload
+  // bridge, so we trust the input lightly here.
+  ipcMain.handle('show-notification', (event, payload) => {
+    try {
+      if (!Notification || !Notification.isSupported()) return { success: false, error: 'not_supported' };
+      const title = sanitizeString(payload?.title || 'Murmullo', 100);
+      const body = sanitizeString(payload?.body || '', 300);
+      const n = new Notification({ title, body, silent: payload?.silent !== false });
+      n.show();
+      return { success: true };
+    } catch (e) {
+      logError('Show notification failed:', e.message);
+      return { success: false, error: e.message };
     }
   });
 
@@ -3356,7 +3514,10 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   log('App quitting...');
   globalShortcut.unregisterAll();
-  saveDatabase();
+  // Force a synchronous flush so we don't drop the last debounced write
+  // (a save-transcription that landed less than SAVE_DB_DEBOUNCE_MS before
+  // quit would otherwise be lost).
+  flushDatabaseSync();
 
   // Destroy tray icon
   if (tray) {

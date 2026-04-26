@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Mic, MicOff, Check, AlertCircle, Loader2, X, HelpCircle } from 'lucide-react';
+import { playCompletionChime } from './lib/sounds';
 
 // Hard cap: any single recording longer than this is automatically stopped.
 // Protects against forgotten hotkeys, crashes, and runaway memory growth.
@@ -54,41 +55,18 @@ function App() {
   const lastWhisperTextRef = useRef(null);
 
 
-  // Play completion sound
+  // Play completion sound. Implementation lives in src/lib/sounds.js so the
+  // Settings preview button stays byte-identical to what users actually hear.
   const playCompletionSound = useCallback(() => {
-    try {
-      // Use Web Audio API to generate a pleasant completion chime
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-
-      // Pleasant two-tone chime (C5 then E5)
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime); // C5
-      oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime + 0.1); // E5
-
-      // Fade in and out
-      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.4, audioContext.currentTime + 0.05);
-      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1);
-      gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.25);
-
-      oscillator.start(audioContext.currentTime);
-      oscillator.stop(audioContext.currentTime + 0.25);
-
-      // Cleanup
-      oscillator.onended = () => audioContext.close();
-    } catch (e) {
-      console.log('[App] Could not play completion sound:', e);
-    }
+    playCompletionChime();
   }, []);
 
-  // Show toast notification
+  // Show toast notification. The floating mic window is locked at 60x60 with
+  // transparent background, which makes inline toasts impractical: instead
+  // we route warning/error toasts through the OS notification center via
+  // electronAPI.showNotification, while still keeping the in-state copy for
+  // future inline UIs and tests.
   const showToast = useCallback((type, message, duration = 5000) => {
-    // Clear any existing toast timeout
     if (toastTimeoutRef.current) {
       clearTimeout(toastTimeoutRef.current);
     }
@@ -96,6 +74,19 @@ function App() {
     toastTimeoutRef.current = setTimeout(() => {
       setToast(null);
     }, duration);
+
+    // OS notification for warning/error so the user actually sees it.
+    if (type === 'warning' || type === 'error') {
+      try {
+        window.electronAPI?.showNotification?.({
+          title: type === 'error' ? 'Murmullo - Error' : 'Murmullo',
+          body: message,
+          silent: true
+        });
+      } catch (_) {
+        // Non-fatal: notifications might be disabled by the OS.
+      }
+    }
   }, []);
 
   // Show error toast when status changes to ERROR
@@ -115,20 +106,48 @@ function App() {
     processedText,
     processingMethod,
     agentName,
-    error
+    error,
+    transport
   }) => {
-    if (!originalText) return;
+    if (!originalText) return null;
     try {
-      await window.electronAPI.saveTranscription({
+      const res = await window.electronAPI.saveTranscription({
         original_text: originalText,
         processed_text: processedText && processedText !== originalText ? processedText : null,
         is_processed: !!(processedText && processedText !== originalText),
         processing_method: processingMethod || 'none',
         agent_name: agentName || null,
-        error: error || null
+        error: error || null,
+        transport: transport || null
       });
+      return res?.success ? (res.id ?? null) : null;
     } catch (e) {
       console.log('[App] saveTranscription failed:', e?.message);
+      return null;
+    }
+  }, []);
+
+  // Update an existing row in History. Used by the instant-paste flow when
+  // the background AI refinement finishes, so we never end up with two rows
+  // for a single dictation (cycle 2 H-202).
+  const updateTranscription = useCallback(async ({
+    id,
+    processedText,
+    processingMethod,
+    agentName,
+    transport
+  }) => {
+    if (!id) return;
+    try {
+      await window.electronAPI.updateTranscription({
+        id,
+        processed_text: processedText ?? undefined,
+        processing_method: processingMethod ?? undefined,
+        agent_name: agentName ?? undefined,
+        transport: transport ?? undefined
+      });
+    } catch (e) {
+      console.log('[App] updateTranscription failed:', e?.message);
     }
   }, []);
 
@@ -606,6 +625,16 @@ function App() {
       lastWhisperTextRef.current = originalWhisperText;
       console.log('[App] Transcribed text:', finalText);
 
+      // Surface backend->local fallback to the user. Cycle 1 plumbed the flag
+      // through main.js but the renderer never read it, so the user silently
+      // burned local quota when the backend was down. (cycle 2 H-206)
+      if (transcriptionResult.viaBackendFallback) {
+        const fallbackMsg = transcriptionResult.fallbackReason === 'auth_expired'
+          ? 'Sesión expirada en el backend, transcribiendo localmente'
+          : 'Backend no disponible, usando modo local';
+        showToast('warning', fallbackMsg, 3000);
+      }
+
       if (cancelRequestedRef.current) throw new Error('cancelled');
 
       // FIRE-AND-FORGET BRANCH: when instantPaste is on and Smart Mode is
@@ -637,37 +666,66 @@ function App() {
 
         // Persist with the raw text first so History captures the dictation
         // even if the background refinement never finishes (network drop,
-        // app close). Background refinement updates the row only by inserting
-        // a refined copy; that is acceptable for now.
-        persistTranscription({
+        // app close). We capture the inserted row id and, when the refinement
+        // succeeds, UPDATE that same row instead of inserting a second copy
+        // (cycle 2 H-202 fix; previously History double-counted).
+        const transcriptionTransport =
+          transcriptionResult.transport ||
+          (transcriptionResult.viaBackendFallback
+            ? 'local-fallback'
+            : (transcriptionResult.viaBackend ? 'backend' : 'local'));
+        const insertedId = await persistTranscription({
           originalText: originalWhisperText,
           processedText: null,
           processingMethod: 'fast',
           agentName: null,
-          error: null
+          error: null,
+          transport: transcriptionTransport
         });
         lastWhisperTextRef.current = null;
 
         // Background refinement (best-effort, errors are silent to the user).
-        // Intentionally no await — this is fire-and-forget.
+        // Intentionally no await — this is fire-and-forget. On success we
+        // promote the same row from 'fast' to 'smart' via UPDATE; on failure
+        // we leave the 'fast' row in place untouched.
         window.electronAPI.processText(finalText, {
           provider: settings.reasoningProvider,
           apiKey: currentOpenAIKey,
           anthropicKey: currentAnthropicKey
         })
           .then((res) => {
-            if (res?.success && res.text) {
+            // Defensive: backend may return success:true with metadata.processed=false
+            // when the upstream AI provider failed (e.g. invalid Anthropic key).
+            // Treat that case as a refinement failure so we don't pretend smart
+            // mode succeeded with raw text. (cycle 2 H-204)
+            const aiActuallyProcessed =
+              res?.success === true &&
+              !!res.text &&
+              res.metadata?.processed !== false &&
+              !res.error;
+
+            if (aiActuallyProcessed) {
               console.log('[App] Background AI refinement complete');
               setLastText(res.text);
-              persistTranscription({
-                originalText: originalWhisperText,
-                processedText: res.text,
-                processingMethod: 'smart',
-                agentName: settings.reasoningProvider,
-                error: null
-              });
+              if (insertedId) {
+                updateTranscription({
+                  id: insertedId,
+                  processedText: res.text,
+                  processingMethod: 'smart',
+                  agentName: settings.reasoningProvider
+                });
+              }
             } else {
-              console.log('[App] Background AI refinement skipped or failed:', res?.error);
+              console.log('[App] Background AI refinement skipped or failed:', res?.error || 'no AI processing');
+              if (res?.metadata?.processed === false) {
+                showToast('warning', 'Smart Mode no disponible, texto sin procesar', 4000);
+                try { window.electronAPI.logFromRenderer?.({
+                  level: 'warn',
+                  source: 'App',
+                  message: 'AI_PROCESSING_FAILED_BACKEND',
+                  data: { error: res?.error || 'metadata.processed=false' }
+                }); } catch (_) {}
+              }
             }
           })
           .catch((err) => console.log('[App] Background AI refinement error:', err?.message));
@@ -695,12 +753,32 @@ function App() {
 
         console.log('[App] AI processing result:', processResult);
 
-        if (processResult.success) {
-          finalText = processResult.text;
-        } else if (processResult.code === 'CANCELLED' || processResult.error === 'cancelled') {
+        // Backend may shape the response as success:true / metadata.processed=false
+        // when the upstream provider failed (e.g. invalid Anthropic key on
+        // server). We must NOT treat that as a smart-mode success or we'll
+        // silently paste raw Whisper output while telling the user it was
+        // refined. (cycle 2 H-204)
+        const aiActuallyProcessed =
+          processResult.success === true &&
+          !!processResult.text &&
+          processResult.metadata?.processed !== false &&
+          !processResult.error;
+
+        if (processResult.code === 'CANCELLED' || processResult.error === 'cancelled') {
           throw new Error('cancelled');
+        } else if (aiActuallyProcessed) {
+          finalText = processResult.text;
         } else {
           aiError = processResult.error || 'AI processing failed';
+          if (processResult.metadata?.processed === false) {
+            showToast('warning', 'Smart Mode no disponible, texto sin procesar', 4000);
+            try { window.electronAPI.logFromRenderer?.({
+              level: 'warn',
+              source: 'App',
+              message: 'AI_PROCESSING_FAILED_BACKEND',
+              data: { error: processResult.error || 'metadata.processed=false' }
+            }); } catch (_) {}
+          }
           console.warn('[App] AI processing failed, using original text');
         }
       }
@@ -732,12 +810,18 @@ function App() {
       const appliedMethod =
         settings.processingMode === 'smart' && aiAttempted && !aiError ? 'smart' :
         settings.processingMode === 'verbatim' ? 'verbatim' : 'fast';
+      const syncTransport =
+        transcriptionResult.transport ||
+        (transcriptionResult.viaBackendFallback
+          ? 'local-fallback'
+          : (transcriptionResult.viaBackend ? 'backend' : 'local'));
       persistTranscription({
         originalText: originalWhisperText,
         processedText: finalText,
         processingMethod: appliedMethod,
         agentName: appliedMethod === 'smart' ? settings.reasoningProvider : null,
-        error: aiError
+        error: aiError,
+        transport: syncTransport
       });
       lastWhisperTextRef.current = null;
 

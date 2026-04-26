@@ -2,6 +2,7 @@ import React, { useState, useEffect, Component } from 'react';
 import { Settings, History, Key, Keyboard, X, Save, Trash2, BarChart3, Clock, FileText, Zap, HelpCircle, DollarSign, ExternalLink, FolderOpen, Download, ScrollText, RefreshCw, Github, Info, Shield, ShieldCheck, ShieldAlert, User, Cloud, CloudOff, LogOut, Loader2, Mail, Lock, AlertCircle, ArrowDownCircle, CheckCircle2, XCircle, BookText, Plus, Edit3, Play, Upload, ClipboardPaste, Eye, EyeOff } from 'lucide-react';
 import UsagePanel from './components/UsagePanel';
 import WelcomeModal from './components/WelcomeModal';
+import { playCompletionChime } from './lib/sounds';
 
 // Error Boundary to catch rendering errors
 class ErrorBoundary extends Component {
@@ -699,29 +700,10 @@ function ControlPanel() {
   };
 
   // Preview the completion chime so the user can decide whether to leave it on.
-  // Kept in sync with App.jsx playCompletionSound (C5 + E5 sine, ~250ms).
+  // Implementation lives in src/lib/sounds.js so this is identical to what
+  // App.jsx plays after a successful dictation.
   const previewCompletionSound = () => {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const audioContext = new Ctx();
-      const oscillator = audioContext.createOscillator();
-      const gainNode = audioContext.createGain();
-      oscillator.connect(gainNode);
-      gainNode.connect(audioContext.destination);
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime);
-      oscillator.frequency.setValueAtTime(659.25, audioContext.currentTime + 0.1);
-      gainNode.gain.setValueAtTime(0, audioContext.currentTime);
-      gainNode.gain.linearRampToValueAtTime(0.4, audioContext.currentTime + 0.05);
-      gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1);
-      gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + 0.25);
-      oscillator.start(audioContext.currentTime);
-      oscillator.stop(audioContext.currentTime + 0.25);
-      oscillator.onended = () => audioContext.close();
-    } catch (e) {
-      console.log('[ControlPanel] Could not preview completion sound:', e);
-    }
+    playCompletionChime();
   };
 
   const saveSettings = () => {

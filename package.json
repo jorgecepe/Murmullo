@@ -113,7 +113,7 @@
       "signAndEditExecutable": false,
       "signingHashAlgorithms": ["sha256"],
       "publisherName": "Jorge Cepeda",
-      "verifyUpdateCodeSignature": true
+      "verifyUpdateCodeSignature": false
     },
     "mac": {
       "target": "dmg",

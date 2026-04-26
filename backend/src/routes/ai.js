@@ -96,7 +96,10 @@ router.post('/transcribe-and-process',
   aiLimiter,
   [
     body('audio').notEmpty().withMessage('Audio data is required'),
-    body('language').optional().isIn(['es', 'en', 'pt', 'fr', 'de']),
+    // 'auto' mirrors what /transcription accepts; without it the combined
+    // endpoint rejected requests where the client kept Whisper's language at
+    // its default. (cycle 2 H-214)
+    body('language').optional().isIn(['es', 'en', 'pt', 'fr', 'de', 'auto']),
     body('provider').optional().isIn(['anthropic', 'openai']),
     body('skipProcessing').optional().isBoolean()
   ],

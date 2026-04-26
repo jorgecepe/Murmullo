@@ -21,11 +21,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Database
   getTranscriptions: (limit) => ipcRenderer.invoke('get-transcriptions', limit),
   saveTranscription: (data) => ipcRenderer.invoke('save-transcription', data),
+  updateTranscription: (data) => ipcRenderer.invoke('update-transcription', data),
 
   // Control Panel
   showControlPanel: () => ipcRenderer.invoke('show-control-panel'),
   hideControlPanel: () => ipcRenderer.invoke('hide-control-panel'),
   showFloatingMenu: () => ipcRenderer.invoke('show-floating-menu'),
+
+  // OS notifications (used to surface transient warnings that don't fit in
+  // the 60x60 floating mic window, like backend->local fallback).
+  showNotification: (payload) => ipcRenderer.invoke('show-notification', payload),
 
   // API Keys (secure storage)
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),

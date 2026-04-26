@@ -123,13 +123,71 @@ function isValidLanguage(value) {
   return ['es', 'en', 'auto'].includes(value);
 }
 
+// Whitelist for processing_method on saved transcriptions. Kept in sync with
+// App.jsx persistTranscription / fast-mode refinement flow. 'verbatim' was
+// added when the verbatim mode shipped; 'none' is used for cancelled flows.
+const VALID_PROCESSING_METHODS = ['fast', 'smart', 'verbatim', 'none'];
+
 /**
- * Validate transcription data for saving
+ * Validate transcription data for saving / updating. The schema grew in cycle
+ * 1 (processing_method, agent_name, error, is_processed) but isValid was not
+ * tightened; cycle 2 H-203 adds defensive bounds.
  */
 function isValidTranscriptionData(data) {
   if (!isObject(data)) return false;
   if (!isString(data.original_text)) return false;
   if (data.processed_text !== null && data.processed_text !== undefined && !isString(data.processed_text)) return false;
+
+  if (data.processing_method !== undefined && data.processing_method !== null) {
+    if (!isString(data.processing_method) || data.processing_method.length > 32) return false;
+    if (!VALID_PROCESSING_METHODS.includes(data.processing_method)) return false;
+  }
+
+  if (data.agent_name !== undefined && data.agent_name !== null) {
+    if (!isString(data.agent_name) || data.agent_name.length > 64) return false;
+  }
+
+  if (data.error !== undefined && data.error !== null) {
+    if (!isString(data.error) || data.error.length > 500) return false;
+  }
+
+  if (data.is_processed !== undefined && data.is_processed !== null) {
+    // Accept boolean or 0/1 (the SQLite handler coerces with `? 1 : 0`).
+    if (typeof data.is_processed !== 'boolean' && data.is_processed !== 0 && data.is_processed !== 1) {
+      return false;
+    }
+  }
+
+  if (data.transport !== undefined && data.transport !== null) {
+    if (!isString(data.transport) || data.transport.length > 32) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validate the partial-update payload sent to update-transcription. id is
+ * required, all other fields share the rules from isValidTranscriptionData.
+ */
+function isValidTranscriptionUpdate(data) {
+  if (!isObject(data)) return false;
+  if (!isPositiveInt(data.id)) return false;
+
+  if (data.processed_text !== undefined && data.processed_text !== null && !isString(data.processed_text)) return false;
+
+  if (data.processing_method !== undefined && data.processing_method !== null) {
+    if (!isString(data.processing_method) || data.processing_method.length > 32) return false;
+    if (!VALID_PROCESSING_METHODS.includes(data.processing_method)) return false;
+  }
+
+  if (data.agent_name !== undefined && data.agent_name !== null) {
+    if (!isString(data.agent_name) || data.agent_name.length > 64) return false;
+  }
+
+  if (data.transport !== undefined && data.transport !== null) {
+    if (!isString(data.transport) || data.transport.length > 32) return false;
+  }
+
   return true;
 }
 
@@ -259,6 +317,14 @@ function validateIpcMessage(channel, ...args) {
       const [data] = args;
       if (!isValidTranscriptionData(data)) {
         return validationResult(false, 'Invalid transcription data');
+      }
+      return validationResult(true);
+    }
+
+    case 'update-transcription': {
+      const [data] = args;
+      if (!isValidTranscriptionUpdate(data)) {
+        return validationResult(false, 'Invalid transcription update payload');
       }
       return validationResult(true);
     }
@@ -438,6 +504,7 @@ function validateIpcMessage(channel, ...args) {
     case 'window-drag-end':
     case 'set-backend-mode':
     case 'set-backend-url':
+    case 'show-notification':
       return validationResult(true);
 
     default:
@@ -460,6 +527,7 @@ module.exports = {
   isValidProvider,
   isValidLanguage,
   isValidTranscriptionData,
+  isValidTranscriptionUpdate,
   isValidFilename,
   isValidDictionaryEntry,
   isValidDictionary,
