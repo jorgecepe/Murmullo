@@ -83,7 +83,7 @@ function ControlPanel() {
     language: 'es',
     processingMode: 'smart',
     reasoningProvider: 'anthropic',
-    reasoningModel: 'claude-3-haiku-20240307',
+    reasoningModel: 'claude-haiku-4-5-20251001',
     transcriptionProvider: 'openai', // 'openai' | 'groq'
     instantPaste: false,
     fastUpload: true,
@@ -249,7 +249,7 @@ function ControlPanel() {
       language: localStorage.getItem('language') || 'es',
       processingMode: localStorage.getItem('processingMode') || 'smart',
       reasoningProvider: localStorage.getItem('reasoningProvider') || 'anthropic',
-      reasoningModel: localStorage.getItem('reasoningModel') || 'claude-3-haiku-20240307',
+      reasoningModel: localStorage.getItem('reasoningModel') || 'claude-haiku-4-5-20251001',
       transcriptionProvider: localStorage.getItem('transcriptionProvider') || 'openai',
       instantPaste: localStorage.getItem('instantPaste') === 'true',
       fastUpload: localStorage.getItem('fastUpload') !== 'false',
@@ -937,9 +937,9 @@ function ControlPanel() {
               >
                 {settings.reasoningProvider === 'anthropic' ? (
                   <>
-                    <option value="claude-3-haiku-20240307">Claude 3 Haiku (rápido, económico)</option>
-                    <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
-                    <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                    <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (rápido, económico)</option>
+                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                    <option value="claude-opus-4-7">Claude Opus 4.7</option>
                   </>
                 ) : (
                   <>

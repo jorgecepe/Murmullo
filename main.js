@@ -2057,7 +2057,7 @@ Output el texto completo corregido, sin comillas.`;
 
         endpoint = 'https://api.anthropic.com/v1/messages';
         body = {
-          model: options?.model || 'claude-3-haiku-20240307',
+          model: options?.model || 'claude-haiku-4-5-20251001',
           max_tokens: 1024,
           system: systemPrompt,
           messages: [{ role: 'user', content: sanitizedText }]
@@ -2093,7 +2093,7 @@ Output el texto completo corregido, sin comillas.`;
         // Log action for analytics
         logAction('AI_PROCESSING_COMPLETE', {
           provider: 'anthropic',
-          model: options?.model || 'claude-3-haiku-20240307',
+          model: options?.model || 'claude-haiku-4-5-20251001',
           inputWords: sanitizedText.split(/\s+/).length,
           outputWords: processedText.split(/\s+/).length,
           latencyMs: aiLatency
@@ -3125,7 +3125,7 @@ Output el texto completo corregido, sin comillas.`;
               'anthropic-version': '2023-06-01'
             },
             body: JSON.stringify({
-              model: payload.model || 'claude-3-haiku-20240307',
+              model: payload.model || 'claude-haiku-4-5-20251001',
               max_tokens: 2048,
               system: systemPrompt,
               messages: [{ role: 'user', content: userPrompt }]

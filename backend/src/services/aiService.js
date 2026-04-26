@@ -42,7 +42,7 @@ Output el texto completo corregido, sin comillas.`;
  * Process text with Claude (Anthropic)
  */
 export async function processWithClaude(text, options = {}) {
-  const { model = 'claude-3-haiku-20240307' } = options;
+  const { model = 'claude-haiku-4-5-20251001' } = options;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {

@@ -201,10 +201,10 @@ router.get('/providers', authenticate, (req, res) => {
         id: 'anthropic',
         name: 'Anthropic Claude',
         models: [
-          { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', recommended: true },
-          { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' }
+          { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', recommended: true },
+          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }
         ],
-        default_model: 'claude-3-haiku-20240307'
+        default_model: 'claude-haiku-4-5-20251001'
       },
       {
         id: 'openai',

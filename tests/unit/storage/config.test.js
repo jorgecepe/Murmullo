@@ -47,7 +47,7 @@ describe('Configuration Storage', () => {
       useLocalWhisper: 'false',
       whisperModel: 'whisper-1',
       reasoningProvider: 'anthropic',
-      reasoningModel: 'claude-3-haiku-20240307',
+      reasoningModel: 'claude-haiku-4-5-20251001',
       hotkey: 'CommandOrControl+Shift+Space',
       processingMode: 'smart',
       hasCompletedOnboarding: 'false'
@@ -95,7 +95,7 @@ describe('Configuration Storage', () => {
       },
       anthropic: {
         name: 'Anthropic',
-        models: ['claude-3-haiku-20240307', 'claude-3-5-sonnet-20241022']
+        models: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6']
       }
     };
 
@@ -110,7 +110,7 @@ describe('Configuration Storage', () => {
     });
 
     it('should have Claude Haiku as default for Anthropic', () => {
-      expect(providers.anthropic.models).toContain('claude-3-haiku-20240307');
+      expect(providers.anthropic.models).toContain('claude-haiku-4-5-20251001');
     });
   });
 });
