@@ -27,3 +27,6 @@ npm-debug.log*
 *.tmp
 dist-electron/
 nul
+
+# Internal review reports (per-cycle audits, not for public repo)
+.review/
