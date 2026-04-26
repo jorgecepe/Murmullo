@@ -13,7 +13,13 @@ const STATUS = {
   PROCESSING: 'processing',
   SUCCESS: 'success',
   ERROR: 'error',
-  SILENCE_DETECTED: 'silence_detected'
+  SILENCE_DETECTED: 'silence_detected',
+  // Command Mode (cycle 3 H-004): user holds a different hotkey while a text
+  // selection is active, then dictates an instruction (e.g. "make this
+  // formal"). Visually distinct (blue) from the regular RECORDING state to
+  // make the mode obvious at a glance.
+  COMMAND_RECORDING: 'command_recording',
+  COMMAND_PROCESSING: 'command_processing'
 };
 
 function App() {
@@ -23,6 +29,12 @@ function App() {
   const [processingStage, setProcessingStage] = useState(''); // Detailed progress indicator
   const [toast, setToast] = useState(null); // Toast for visible notifications
   const [usageGate, setUsageGate] = useState(null); // { allowed, percent, secondsRemaining, ... }
+  // Internal toast queue (cycle 3 H-303). The OS notification path delivers
+  // one notification per call, but the in-state copy used to be a single
+  // value, so two toasts in quick succession (e.g. "backend down" + "smart
+  // mode unavailable") would clobber each other in renderer state. We now
+  // keep them in a queue and shift after the duration elapses.
+  const [toastQueue, setToastQueue] = useState([]);
   const [settings, setSettings] = useState({
     processingMode: 'smart',
     language: 'es',
@@ -36,6 +48,11 @@ function App() {
   });
 
   const [isHoveringIcon, setIsHoveringIcon] = useState(false);
+  // 0..1 peak level from the live AnalyserNode while RECORDING /
+  // COMMAND_RECORDING (cycle 3 H-007). Drives the radial glow under the
+  // floating mic so the user has visual confirmation the mic is picking up
+  // audio without waiting for the silence gate to fire post-stop.
+  const [audioLevel, setAudioLevel] = useState(0);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -54,6 +71,20 @@ function App() {
   // if the user cancels mid-paste we can still persist the dictation.
   const lastWhisperTextRef = useRef(null);
 
+  // Command Mode (cycle 3 H-004) refs:
+  //   recordingModeRef stores 'dictate' (default) or 'command'. processAudio
+  //   reads it to decide which downstream flow to run. Stored in a ref instead
+  //   of state because the mediaRecorder.onstop closure is created at start
+  //   time and captures whatever is current at that moment.
+  //   commandSelectionRef holds the captured selection text from prep so
+  //   the execute call can pass it back to main.js after Whisper.
+  const recordingModeRef = useRef('dictate');
+  const commandSelectionRef = useRef('');
+
+  // Audio meter plumbing (cycle 3 H-007). Created lazily inside startRecording
+  // and torn down by cleanupAudioResources so we never leak an AudioContext.
+  const audioMeterRef = useRef({ ctx: null, analyser: null, raf: null });
+
 
   // Play completion sound. Implementation lives in src/lib/sounds.js so the
   // Settings preview button stays byte-identical to what users actually hear.
@@ -61,18 +92,16 @@ function App() {
     playCompletionChime();
   }, []);
 
-  // Show toast notification. The floating mic window is locked at 60x60 with
-  // transparent background, which makes inline toasts impractical: instead
-  // we route warning/error toasts through the OS notification center via
-  // electronAPI.showNotification, while still keeping the in-state copy for
-  // future inline UIs and tests.
+  // Show toast notification (cycle 3 H-303: queue-aware). Each call appends
+  // to the queue rather than replacing the current toast, so two warnings
+  // emitted in quick succession both reach the user. The queue is auto-shifted
+  // by per-toast timeouts so callers don't have to think about ordering.
   const showToast = useCallback((type, message, duration = 5000) => {
-    if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
-    }
-    setToast({ type, message });
-    toastTimeoutRef.current = setTimeout(() => {
-      setToast(null);
+    const id = Date.now() + Math.random();
+    setToastQueue((prev) => [...prev, { id, type, message }]);
+    setToast({ type, message }); // keep singular field for backward compat / tests
+    setTimeout(() => {
+      setToastQueue((prev) => prev.filter((t) => t.id !== id));
     }, duration);
 
     // OS notification for warning/error so the user actually sees it.
@@ -151,9 +180,69 @@ function App() {
     }
   }, []);
 
+  // Stop the audio meter loop and release its AudioContext. Called from
+  // cleanupAudioResources so we never leak even on unmount mid-recording.
+  const stopAudioMeter = useCallback(() => {
+    const meter = audioMeterRef.current;
+    if (!meter) return;
+    if (meter.raf) {
+      try { cancelAnimationFrame(meter.raf); } catch (_) {}
+      meter.raf = null;
+    }
+    if (meter.ctx) {
+      try { meter.ctx.close(); } catch (_) {}
+      meter.ctx = null;
+    }
+    meter.analyser = null;
+    setAudioLevel(0);
+  }, []);
+
+  // Spin up an AnalyserNode tap on the MediaStream and run a rAF loop that
+  // computes the peak level (max abs sample) every frame. Cheap: 256 fft bins,
+  // O(256) per frame, no allocations after init.
+  const startAudioMeter = useCallback((stream) => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx || !stream) return;
+      const ctx = new Ctx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.5;
+      source.connect(analyser);
+
+      const data = new Uint8Array(analyser.fftSize);
+      const meter = audioMeterRef.current;
+      meter.ctx = ctx;
+      meter.analyser = analyser;
+
+      const tick = () => {
+        if (!audioMeterRef.current.analyser) return;
+        analyser.getByteTimeDomainData(data);
+        let peak = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = Math.abs(data[i] - 128) / 128;
+          if (v > peak) peak = v;
+        }
+        // Floor at 0.02 so the indicator twitches with normal speech but
+        // doesn't permanently glow on background noise.
+        const normalized = peak < 0.02 ? 0 : Math.min(1, peak * 1.4);
+        setAudioLevel(normalized);
+        meter.raf = requestAnimationFrame(tick);
+      };
+      meter.raf = requestAnimationFrame(tick);
+    } catch (err) {
+      console.warn('[App] startAudioMeter failed:', err?.message);
+    }
+  }, []);
+
   // Cleanup function to properly release audio resources
   const cleanupAudioResources = useCallback(() => {
     console.log('[App] Cleaning up audio resources...');
+
+    // Tear down the live audio meter first so it stops sampling a stream we
+    // are about to release.
+    stopAudioMeter();
 
     // Stop MediaRecorder if active
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -177,7 +266,7 @@ function App() {
 
     // Clear audio chunks
     audioChunksRef.current = [];
-  }, []);
+  }, [stopAudioMeter]);
 
   // Cleanup on unmount and before unload
   useEffect(() => {
@@ -250,16 +339,84 @@ function App() {
       console.log('[App] Hotkey triggered, current status:', status);
       if (status === STATUS.RECORDING) {
         stopRecording();
-      } else if (status !== STATUS.PROCESSING) {
+      } else if (status === STATUS.COMMAND_RECORDING) {
+        // The dictate hotkey was pressed while a Command Mode recording is in
+        // progress. Stop the command recording so we don't end up with two
+        // overlapping flows (the alternative is to ignore the keypress, but
+        // letting the user cancel feels less surprising).
+        stopRecording();
+      } else if (
+        status !== STATUS.PROCESSING &&
+        status !== STATUS.COMMAND_PROCESSING
+      ) {
         // Allow starting a new recording from IDLE, SUCCESS, or ERROR without
         // waiting for the status badge to reset. The SUCCESS/ERROR states only
         // exist as a visual confirmation after a completed transcription.
+        recordingModeRef.current = 'dictate';
         startRecording();
       }
     });
 
     return () => unsubscribe();
   }, [status]);
+
+  // Command Mode hotkey listener (cycle 3 H-004). Toggles a recording session
+  // that captures the current text selection first via the prep IPC, then
+  // hands the spoken instruction to Claude/GPT to rewrite the selection.
+  useEffect(() => {
+    if (!window.electronAPI?.onCommandModeToggle) return;
+
+    const unsubscribe = window.electronAPI.onCommandModeToggle(async () => {
+      console.log('[App] Command Mode hotkey, status:', status);
+
+      if (status === STATUS.COMMAND_RECORDING) {
+        // Toggle off: stop and process.
+        stopRecording();
+        return;
+      }
+
+      if (status === STATUS.RECORDING) {
+        // The dictate flow is already running. Don't interleave two audio
+        // captures; ask the user to finish what they started.
+        showToast('warning', 'Termina la grabación actual primero', 3000);
+        return;
+      }
+
+      if (status === STATUS.PROCESSING || status === STATUS.COMMAND_PROCESSING) {
+        showToast('warning', 'Espera a que termine el procesamiento actual', 3000);
+        return;
+      }
+
+      // From any other state (IDLE / SUCCESS / ERROR / SILENCE), start a new
+      // command recording.
+      try {
+        const prep = await window.electronAPI.commandModePrep();
+        if (!prep?.success) {
+          if (prep?.error === 'no_selection') {
+            showToast('warning', prep.message || 'Selecciona texto antes de usar Command Mode', 4000);
+          } else if (prep?.error === 'busy') {
+            showToast('warning', prep.message || 'Command Mode ya está en uso', 3000);
+          } else {
+            showToast('error', prep?.error || 'Command Mode no pudo capturar la selección', 4000);
+          }
+          return;
+        }
+
+        if (prep.truncated) {
+          showToast('warning', `Texto largo, truncado a ${prep.selectedText.length} caracteres`, 4000);
+        }
+
+        commandSelectionRef.current = prep.selectedText;
+        recordingModeRef.current = 'command';
+        startRecording();
+      } catch (err) {
+        console.error('[App] commandModePrep error:', err);
+        showToast('error', 'Error al iniciar Command Mode: ' + (err?.message || 'desconocido'), 4000);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [status, startRecording, stopRecording, showToast]);
 
   const startRecording = useCallback(async () => {
     console.log('[App] Starting recording...');
@@ -357,9 +514,13 @@ function App() {
       mediaRecorderRef.current = mediaRecorder;
       // Don't use timeslice - record everything in one chunk to ensure valid EBML header
       mediaRecorder.start();
-      console.log('[App] Recording started');
-      setStatus(STATUS.RECORDING);
+      console.log('[App] Recording started, mode:', recordingModeRef.current);
+      // Pick the right visual state for the active mode (cycle 3 H-004).
+      setStatus(recordingModeRef.current === 'command' ? STATUS.COMMAND_RECORDING : STATUS.RECORDING);
       setErrorMessage('');
+
+      // Live audio meter (cycle 3 H-007).
+      startAudioMeter(stream);
 
       // Hard cap: stop recording after MAX_RECORDING_MS to prevent runaway memory
       if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
@@ -376,7 +537,7 @@ function App() {
       setStatus(STATUS.ERROR);
       setErrorMessage('No se pudo acceder al micrófono: ' + error.message);
     }
-  }, [settings, cleanupAudioResources]);
+  }, [settings, cleanupAudioResources, startAudioMeter]);
 
   const stopRecording = useCallback(() => {
     console.log('[App] Stopping recording...');
@@ -387,12 +548,15 @@ function App() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       // Just stop - don't use requestData() as it can cause issues
       mediaRecorderRef.current.stop();
-      console.log('[App] MediaRecorder.stop() called');
-      setStatus(STATUS.PROCESSING);
+      console.log('[App] MediaRecorder.stop() called, mode:', recordingModeRef.current);
+      // Stop the meter immediately so the UI doesn't keep glowing through the
+      // processing phase; we want the indicator tied to "mic is open".
+      stopAudioMeter();
+      setStatus(recordingModeRef.current === 'command' ? STATUS.COMMAND_PROCESSING : STATUS.PROCESSING);
     } else {
       console.log('[App] MediaRecorder not active, state:', mediaRecorderRef.current?.state);
     }
-  }, []);
+  }, [stopAudioMeter]);
 
   // Convert audio blob to WAV format using Web Audio API
   // This avoids the Chromium bug where MediaRecorder produces corrupted WebM headers
@@ -467,8 +631,126 @@ function App() {
     }
   };
 
+  // Command Mode flow (cycle 3 H-004). Runs after recording stops when the
+  // user triggered the command hotkey. Steps:
+  //   1) Transcribe the audio (Whisper) in verbatim mode so we don't format
+  //      a short instruction like "translate to english" into a list.
+  //   2) Send {instruction, selectedText} to main.js's command-mode-execute,
+  //      which builds the prompt, calls Claude/GPT, and pastes the result.
+  // Errors and silence cases bubble up cleanly via toasts and the SILENCE
+  // status. Cancellation goes through the same cancelRequestedRef path the
+  // dictate flow uses.
+  const processCommandAudio = async (audioBlob, selectedText) => {
+    if (!selectedText || !selectedText.trim()) {
+      throw new Error('Selecciona texto antes de usar Command Mode');
+    }
+    if (audioBlob.size === 0) {
+      throw new Error('No se grabó audio. Por favor intenta de nuevo.');
+    }
+
+    const currentOpenAIKey = localStorage.getItem('openaiKey') || '';
+    const currentAnthropicKey = localStorage.getItem('anthropicKey') || '';
+
+    setProcessingStage('Transcribiendo instrucción...');
+
+    let arrayBuffer;
+    try {
+      arrayBuffer = await audioBlob.arrayBuffer();
+    } catch (e) {
+      arrayBuffer = await convertToWav(audioBlob);
+    }
+
+    const transcription = await window.electronAPI.transcribeAudio(
+      Array.from(new Uint8Array(arrayBuffer)),
+      {
+        language: settings.language,
+        apiKey: currentOpenAIKey,
+        // Verbatim so the instruction stays short and unformatted; we don't
+        // want the corrector to expand "1. translate it" into a list.
+        processingMode: 'verbatim',
+        transcriptionProvider: settings.transcriptionProvider
+      }
+    );
+
+    if (!transcription.success) {
+      const code = transcription.code || transcription.error;
+      if (code === 'CANCELLED' || transcription.error === 'cancelled') {
+        return; // user cancelled
+      }
+      throw new Error(transcription.error || 'No se pudo transcribir la instrucción');
+    }
+
+    const instruction = (transcription.text || '').trim();
+    if (!instruction) {
+      // Whisper returned empty (silence / mic muted). Don't bother calling Claude.
+      showToast('warning', 'No se detectó la instrucción de voz', 3000);
+      setProcessingStage('');
+      setStatus(STATUS.IDLE);
+      return;
+    }
+
+    if (cancelRequestedRef.current) return;
+
+    setProcessingStage('Aplicando con IA...');
+
+    const result = await window.electronAPI.commandModeExecute({
+      instruction,
+      selectedText,
+      provider: settings.reasoningProvider,
+      apiKey: currentOpenAIKey,
+      anthropicKey: currentAnthropicKey
+    });
+
+    if (!result?.success) {
+      const code = result?.code || result?.error;
+      if (code === 'CANCELLED') return;
+      const errMsg = result?.message || result?.error || 'Command Mode falló';
+      throw new Error(errMsg);
+    }
+
+    setLastText(result.resultText);
+    setProcessingStage('');
+    setStatus(STATUS.SUCCESS);
+
+    const soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
+    if (soundEnabled) playCompletionSound();
+
+    if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
+    resetStatusTimeoutRef.current = setTimeout(() => {
+      setStatus(STATUS.IDLE);
+      resetStatusTimeoutRef.current = null;
+    }, 2000);
+  };
+
   const processAudio = async (audioBlob) => {
-    console.log('[App] Processing audio, blob size:', audioBlob.size);
+    console.log('[App] Processing audio, blob size:', audioBlob.size, 'mode:', recordingModeRef.current);
+
+    // Command Mode dispatch (cycle 3 H-004). The audio is the user's spoken
+    // INSTRUCTION, not free dictation. We transcribe in verbatim mode so list
+    // formatting doesn't mangle short imperatives, then hand off to the
+    // command-mode-execute IPC which builds the prompt and pastes the result.
+    if (recordingModeRef.current === 'command') {
+      // Reset the mode for any subsequent recording the user kicks off
+      // before this one finishes processing (defensive).
+      const selectedText = commandSelectionRef.current || '';
+      commandSelectionRef.current = '';
+      recordingModeRef.current = 'dictate';
+      try {
+        await processCommandAudio(audioBlob, selectedText);
+      } catch (err) {
+        console.error('[App] Command Mode flow failed:', err);
+        setStatus(STATUS.ERROR);
+        setErrorMessage(err?.message || 'Command Mode falló');
+        if (resetStatusTimeoutRef.current) clearTimeout(resetStatusTimeoutRef.current);
+        resetStatusTimeoutRef.current = setTimeout(() => {
+          setStatus(STATUS.IDLE);
+          setErrorMessage('');
+          resetStatusTimeoutRef.current = null;
+        }, 4000);
+      }
+      return;
+    }
+
     try {
       if (audioBlob.size === 0) {
         throw new Error('No se grabó audio. Por favor intenta de nuevo.');
@@ -921,7 +1203,19 @@ function App() {
     setIsHoveringIcon(false);
   }, []);
 
-  const showCancelOverlay = status === STATUS.PROCESSING && isHoveringIcon;
+  const showCancelOverlay =
+    (status === STATUS.PROCESSING || status === STATUS.COMMAND_PROCESSING) && isHoveringIcon;
+
+  // Live audio glow under the floating mic (cycle 3 H-007). Only paint a glow
+  // while the mic is open; once the recording stops we want the indicator to
+  // crisp back into its solid color so the next state transition reads clean.
+  const isMicOpen = status === STATUS.RECORDING || status === STATUS.COMMAND_RECORDING;
+  const glowColor = status === STATUS.COMMAND_RECORDING
+    ? 'rgba(96, 165, 250, 0.85)'  // tailwind blue-400 ish
+    : 'rgba(248, 113, 113, 0.85)'; // tailwind red-400 ish
+  const glowStyle = isMicOpen
+    ? { boxShadow: `0 0 ${8 + audioLevel * 28}px ${audioLevel * 6}px ${glowColor}` }
+    : undefined;
 
   return (
     <div className="w-[60px] h-[60px] flex flex-col items-center justify-center bg-transparent relative">
@@ -932,11 +1226,14 @@ function App() {
         onContextMenu={handleContextMenu}
         onMouseEnter={() => setIsHoveringIcon(true)}
         onMouseLeave={() => setIsHoveringIcon(false)}
+        style={glowStyle}
         className={`
           relative w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-grab active:cursor-grabbing
           ${status === STATUS.IDLE ? 'bg-slate-700/90 text-slate-400' : ''}
-          ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white shadow-red-500/50' : ''}
+          ${status === STATUS.RECORDING ? 'bg-red-500 animate-pulse text-white' : ''}
+          ${status === STATUS.COMMAND_RECORDING ? 'bg-blue-500 animate-pulse text-white' : ''}
           ${status === STATUS.PROCESSING ? 'bg-blue-500 text-white shadow-blue-500/50' : ''}
+          ${status === STATUS.COMMAND_PROCESSING ? 'bg-indigo-500 text-white shadow-indigo-500/50' : ''}
           ${status === STATUS.SUCCESS ? 'bg-green-500 text-white shadow-green-500/50' : ''}
           ${status === STATUS.ERROR ? 'bg-red-600 text-white shadow-red-600/50' : ''}
           ${status === STATUS.SILENCE_DETECTED ? 'bg-amber-500/90 text-white shadow-amber-500/50' : ''}
@@ -944,7 +1241,9 @@ function App() {
         title={
           status === STATUS.IDLE ? `Murmullo - Ctrl+Shift+Space para grabar (clic derecho para menú)${usageGate ? ` | ${(usageGate.secondsRemaining / 60).toFixed(1)} min restantes de prueba gratuita` : ''}` :
           status === STATUS.RECORDING ? 'Grabando... (Ctrl+Shift+Space para detener)' :
+          status === STATUS.COMMAND_RECORDING ? 'Command Mode: di la instrucción y presiona el hotkey para detener' :
           status === STATUS.PROCESSING ? `${processingStage || 'Procesando...'} - Haz clic en la X para cancelar` :
+          status === STATUS.COMMAND_PROCESSING ? `${processingStage || 'Aplicando comando...'} - Haz clic en la X para cancelar` :
           status === STATUS.SUCCESS ? 'Listo' :
           status === STATUS.SILENCE_DETECTED ? 'No se detectó audio. Verifica que tu micrófono esté activo y hables más alto.' :
           errorMessage || 'Error'
@@ -954,7 +1253,9 @@ function App() {
             X replaces the spinner cleanly on hover during PROCESSING. */}
         {!showCancelOverlay && status === STATUS.IDLE && <Mic size={20} />}
         {!showCancelOverlay && status === STATUS.RECORDING && <MicOff size={20} />}
+        {!showCancelOverlay && status === STATUS.COMMAND_RECORDING && <MicOff size={20} />}
         {!showCancelOverlay && status === STATUS.PROCESSING && <Loader2 size={20} className="animate-spin" />}
+        {!showCancelOverlay && status === STATUS.COMMAND_PROCESSING && <Loader2 size={20} className="animate-spin" />}
         {!showCancelOverlay && status === STATUS.SUCCESS && <Check size={20} />}
         {!showCancelOverlay && status === STATUS.ERROR && <AlertCircle size={20} />}
         {!showCancelOverlay && status === STATUS.SILENCE_DETECTED && <HelpCircle size={20} />}

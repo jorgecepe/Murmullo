@@ -125,8 +125,9 @@ function isValidLanguage(value) {
 
 // Whitelist for processing_method on saved transcriptions. Kept in sync with
 // App.jsx persistTranscription / fast-mode refinement flow. 'verbatim' was
-// added when the verbatim mode shipped; 'none' is used for cancelled flows.
-const VALID_PROCESSING_METHODS = ['fast', 'smart', 'verbatim', 'none'];
+// added when the verbatim mode shipped; 'none' is used for cancelled flows;
+// 'command' was added in cycle 3 for Command Mode rewrites (H-004).
+const VALID_PROCESSING_METHODS = ['fast', 'smart', 'verbatim', 'none', 'command'];
 
 /**
  * Validate transcription data for saving / updating. The schema grew in cycle
@@ -469,6 +470,52 @@ function validateIpcMessage(channel, ...args) {
       }
       return validationResult(true);
     }
+
+    // Command Mode channels (cycle 3 H-004). Validation is light: the prep
+    // step takes no args, execute takes a structured payload that is
+    // sanitized in main.js, and the hotkey set reuses set-hotkey rules.
+    case 'set-command-hotkey': {
+      const [hotkey] = args;
+      if (!isValidHotkey(hotkey)) {
+        return validationResult(false, 'Invalid hotkey format');
+      }
+      return validationResult(true);
+    }
+
+    case 'set-command-mode-enabled': {
+      const [enabled] = args;
+      if (!isBoolean(enabled)) {
+        return validationResult(false, 'enabled debe ser boolean');
+      }
+      return validationResult(true);
+    }
+
+    case 'command-mode-execute': {
+      const [payload] = args;
+      if (!isObject(payload)) {
+        return validationResult(false, 'payload must be an object');
+      }
+      if (typeof payload.instruction !== 'string') {
+        return validationResult(false, 'instruction must be a string');
+      }
+      if (typeof payload.selectedText !== 'string') {
+        return validationResult(false, 'selectedText must be a string');
+      }
+      if (payload.instruction.length > 4000) {
+        return validationResult(false, 'instruction too long');
+      }
+      if (payload.selectedText.length > 8000) {
+        return validationResult(false, 'selectedText too long');
+      }
+      if (payload.provider && !isValidProvider(payload.provider)) {
+        return validationResult(false, 'Invalid provider');
+      }
+      return validationResult(true);
+    }
+
+    case 'command-mode-prep':
+    case 'get-command-mode-settings':
+      return validationResult(true);
 
     // Handlers that take no arguments or only need basic validation
     case 'get-api-keys':

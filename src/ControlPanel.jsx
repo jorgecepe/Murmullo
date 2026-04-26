@@ -151,6 +151,15 @@ function ControlPanel() {
   const [customHotkey, setCustomHotkey] = useState('');
   const [hotkeyStatus, setHotkeyStatus] = useState({ message: '', type: '' });
 
+  // Command Mode (cycle 3 H-004): separate hotkey + on/off toggle. Disabled
+  // by default so we don't steal Ctrl+Shift+E from Cursor / VSCode without
+  // the user explicitly opting in.
+  const [commandModeEnabled, setCommandModeEnabled] = useState(false);
+  const [commandHotkey, setCommandHotkey] = useState('CommandOrControl+Shift+E');
+  const [commandModeSupported, setCommandModeSupported] = useState(true);
+  const [commandHotkeyDraft, setCommandHotkeyDraft] = useState('CommandOrControl+Shift+E');
+  const [commandModeStatus, setCommandModeStatus] = useState({ message: '', type: '' });
+
   // Backend/Online mode state
   const [backendMode, setBackendMode] = useState(false);
   const [backendUrl, setBackendUrl] = useState('https://murmullo-api.luminaconsulting.ai');
@@ -301,6 +310,19 @@ function ControlPanel() {
           setCurrentHotkey(hotkey);
         }
       });
+    }
+
+    // Load Command Mode settings (cycle 3 H-004)
+    if (window.electronAPI?.getCommandModeSettings) {
+      window.electronAPI.getCommandModeSettings().then(cfg => {
+        if (!cfg) return;
+        setCommandModeEnabled(!!cfg.enabled);
+        if (typeof cfg.hotkey === 'string') {
+          setCommandHotkey(cfg.hotkey);
+          setCommandHotkeyDraft(cfg.hotkey);
+        }
+        setCommandModeSupported(cfg.supported !== false);
+      }).catch(() => {});
     }
 
     // Load backend settings from main process
@@ -744,6 +766,45 @@ function ControlPanel() {
       }
     } catch (err) {
       setHotkeyStatus({ message: 'Error: ' + err.message, type: 'error' });
+    }
+  };
+
+  // Command Mode toggle / hotkey change (cycle 3 H-004).
+  const toggleCommandMode = async (enabled) => {
+    if (!window.electronAPI?.setCommandModeEnabled) return;
+    setCommandModeStatus({ message: enabled ? 'Activando...' : 'Desactivando...', type: 'info' });
+    try {
+      const result = await window.electronAPI.setCommandModeEnabled(enabled);
+      if (result?.success) {
+        setCommandModeEnabled(!!result.enabled);
+        setCommandModeStatus({
+          message: result.enabled ? 'Command Mode activo' : 'Command Mode desactivado',
+          type: 'success'
+        });
+        setTimeout(() => setCommandModeStatus({ message: '', type: '' }), 2500);
+      } else {
+        setCommandModeStatus({ message: result?.error || 'No se pudo cambiar el estado', type: 'error' });
+      }
+    } catch (err) {
+      setCommandModeStatus({ message: 'Error: ' + err.message, type: 'error' });
+    }
+  };
+
+  const changeCommandHotkey = async (newHotkey) => {
+    if (!window.electronAPI?.setCommandHotkey) return;
+    setCommandModeStatus({ message: 'Cambiando hotkey...', type: 'info' });
+    try {
+      const result = await window.electronAPI.setCommandHotkey(newHotkey);
+      if (result?.success) {
+        setCommandHotkey(result.hotkey);
+        setCommandHotkeyDraft(result.hotkey);
+        setCommandModeStatus({ message: 'Hotkey de Command Mode actualizado', type: 'success' });
+        setTimeout(() => setCommandModeStatus({ message: '', type: '' }), 2500);
+      } else {
+        setCommandModeStatus({ message: result?.error || 'No se pudo registrar', type: 'error' });
+      }
+    } catch (err) {
+      setCommandModeStatus({ message: 'Error: ' + err.message, type: 'error' });
     }
   };
 
@@ -2201,6 +2262,80 @@ function ControlPanel() {
                 Algunos atajos pueden estar ocupados por otras aplicaciones o el sistema operativo.
                 Si el hotkey no funciona, prueba con otra combinación.
               </p>
+            </div>
+
+            {/* Command Mode (cycle 3 H-004): editar texto seleccionado por voz */}
+            <div className="border-t border-slate-700 pt-6 mt-2">
+              <h3 className="text-sm font-semibold text-slate-200 mb-3">Command Mode</h3>
+              <p className="text-xs text-slate-400 mb-4">
+                Selecciona texto en cualquier app, presiona el hotkey de Command Mode y di una instrucción
+                ("traduce al inglés", "hazlo más conciso", "convierte a bullets"). Murmullo reescribe la
+                selección con Claude / GPT y reemplaza el texto.
+              </p>
+
+              {!commandModeSupported && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg mb-3">
+                  <p className="text-xs text-amber-300">
+                    Command Mode no está disponible en Linux todavía. Próxima versión.
+                  </p>
+                </div>
+              )}
+
+              <label className="flex items-center gap-3 cursor-pointer mb-4">
+                <input
+                  type="checkbox"
+                  checked={commandModeEnabled}
+                  onChange={(e) => toggleCommandMode(e.target.checked)}
+                  disabled={!commandModeSupported}
+                  className="w-4 h-4 accent-blue-500"
+                />
+                <span className="text-sm text-slate-200">
+                  Activar Command Mode
+                </span>
+              </label>
+
+              <div className={commandModeEnabled ? '' : 'opacity-50 pointer-events-none'}>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Hotkey de Command Mode
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={commandHotkeyDraft}
+                    onChange={(e) => setCommandHotkeyDraft(e.target.value)}
+                    placeholder="CommandOrControl+Shift+E"
+                    className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                  />
+                  <button
+                    onClick={() => commandHotkeyDraft.trim() && changeCommandHotkey(commandHotkeyDraft.trim())}
+                    disabled={!commandHotkeyDraft.trim() || commandHotkeyDraft.trim() === commandHotkey}
+                    className="bg-blue-500 hover:bg-blue-600 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Aplicar
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Actualmente: <span className="font-mono text-slate-300">{formatHotkeyDisplay(commandHotkey)}</span>
+                </p>
+              </div>
+
+              {commandModeStatus.message && (
+                <p className={`mt-3 text-sm ${
+                  commandModeStatus.type === 'success' ? 'text-green-400' :
+                  commandModeStatus.type === 'error' ? 'text-red-400' :
+                  'text-blue-400'
+                }`}>
+                  {commandModeStatus.message}
+                </p>
+              )}
+
+              <div className="mt-4 p-3 bg-slate-700/50 rounded-lg">
+                <p className="text-xs text-slate-400">
+                  El círculo flotante se vuelve azul mientras grabas la instrucción.
+                  Si Cursor / VSCode interceptan Ctrl+Shift+E, prueba con otra combinación
+                  (ej. <span className="font-mono">CommandOrControl+Alt+E</span>).
+                </p>
+              </div>
             </div>
           </div>
         );

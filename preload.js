@@ -60,6 +60,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setHotkey: (hotkey) => ipcRenderer.invoke('set-hotkey', hotkey),
   getAvailableHotkeys: () => ipcRenderer.invoke('get-available-hotkeys'),
 
+  // Command Mode (cycle 3 H-004)
+  getCommandModeSettings: () => ipcRenderer.invoke('get-command-mode-settings'),
+  setCommandModeEnabled: (enabled) => ipcRenderer.invoke('set-command-mode-enabled', enabled),
+  setCommandHotkey: (hotkey) => ipcRenderer.invoke('set-command-hotkey', hotkey),
+  commandModePrep: () => ipcRenderer.invoke('command-mode-prep'),
+  commandModeExecute: (payload) => ipcRenderer.invoke('command-mode-execute', payload),
+
   // Backend mode
   getBackendSettings: () => ipcRenderer.invoke('get-backend-settings'),
   setBackendMode: (enabled) => ipcRenderer.invoke('set-backend-mode', enabled),
@@ -109,5 +116,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (event, data) => callback(data);
     ipcRenderer.on('update-status', handler);
     return () => ipcRenderer.removeListener('update-status', handler);
+  },
+
+  onCommandModeToggle: (callback) => {
+    const handler = (event) => callback();
+    ipcRenderer.on('command-mode-toggle', handler);
+    return () => ipcRenderer.removeListener('command-mode-toggle', handler);
   }
 });

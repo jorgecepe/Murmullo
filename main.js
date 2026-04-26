@@ -323,6 +323,15 @@ let tray = null;
 let db = null;
 let dbPath = null;
 let currentHotkey = 'CommandOrControl+Shift+Space'; // Default hotkey, can be changed by user
+// Command Mode (cycle 3 H-004): a separate hotkey that captures the user's
+// current text selection, records an instruction, and asks Claude to rewrite
+// the selection accordingly. Disabled by default until the user opts in to
+// avoid stealing Ctrl+Shift+E from Cursor / VSCode keyboard shortcuts.
+let commandHotkey = 'CommandOrControl+Shift+E';
+let commandModeEnabled = false;
+// Tracks whether a command-mode capture is in progress so we don't trip on
+// double-presses or interleave with the normal dictate flow.
+let commandModeBusy = false;
 let secureStorage = null; // Initialized after app is ready
 const rateLimiter = new RateLimiter();
 let usageTracker = null; // Initialized after app is ready
@@ -905,8 +914,14 @@ async function initDatabase() {
 // database, so coalescing bursts (a fast-mode dictation triggers an INSERT
 // then an UPDATE within ~1s) keeps the renderer responsive. Flush is forced
 // on app quit so we never drop the last save.
+//
+// Cycle 3 (H-302) shrinks the window from 500ms to 200ms so a hard crash
+// (Smart App Control kill, OOM, BSOD) loses at most ~200ms of writes instead
+// of half a second. We also wire flushDatabaseSync into uncaughtException /
+// SIGTERM / SIGINT so process termination paths that bypass `will-quit`
+// still persist.
 let saveDbTimeout = null;
-const SAVE_DB_DEBOUNCE_MS = 500;
+const SAVE_DB_DEBOUNCE_MS = 200;
 
 function flushDatabaseSync() {
   if (saveDbTimeout) {
@@ -1208,6 +1223,65 @@ function registerHotkey(newHotkey = null) {
   }
 }
 
+// Register / unregister the Command Mode hotkey (cycle 3 H-004). Kept in a
+// separate function from the dictate hotkey so the user can toggle it on/off
+// without affecting the main flow. Linux is intentionally not supported in
+// v1: SendKeys/AppleScript-equivalents for X11/Wayland are non-trivial and
+// we don't have a tested fallback path, so we just refuse to enable it.
+function registerCommandHotkey(newHotkey = null) {
+  if (commandHotkey) {
+    try {
+      globalShortcut.unregister(commandHotkey);
+    } catch (e) {}
+  }
+
+  const hotkey = (newHotkey || commandHotkey || 'CommandOrControl+Shift+E').trim();
+  commandHotkey = hotkey;
+
+  if (!commandModeEnabled) {
+    log('Command Mode disabled, hotkey not registered');
+    return { success: true, hotkey, registered: false };
+  }
+
+  if (process.platform === 'linux') {
+    log('Command Mode skipped on Linux (no paste integration yet)');
+    return { success: false, error: 'Command Mode no soportado en Linux todavía' };
+  }
+
+  const registered = globalShortcut.register(hotkey, () => {
+    log('Command Mode hotkey pressed');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('command-mode-toggle');
+      mainWindow.showInactive();
+    }
+  });
+
+  if (registered) {
+    log('Command Mode hotkey registered:', hotkey);
+    return { success: true, hotkey, registered: true };
+  } else {
+    logError('Failed to register Command Mode hotkey:', hotkey);
+    return { success: false, error: `No se pudo registrar el hotkey de Command Mode: ${hotkey}` };
+  }
+}
+
+// Persist Command Mode prefs to config.json. Kept in one place so set-hotkey
+// and the dedicated command-hotkey IPC stay in sync.
+function saveCommandModeConfig() {
+  try {
+    const configPath = path.join(app.getPath('userData'), 'config.json');
+    let config = {};
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    }
+    config.commandHotkey = commandHotkey;
+    config.commandModeEnabled = commandModeEnabled;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  } catch (err) {
+    logError('Failed to save Command Mode config:', err.message);
+  }
+}
+
 // Helper to create validated IPC handler
 function createValidatedHandler(channel, handler) {
   return async (event, ...args) => {
@@ -1473,7 +1547,12 @@ function setupIpcHandlers() {
           error?.status === 401 && !backendAccessToken;
 
         const shouldTryLocal = isNetworkClass || isAuthExpired;
-        const fallbackReason = isAuthExpired ? 'auth_expired' : (error?.code || 'unknown');
+        // H-307: when handleBackendResponse throws on a 5xx without a code,
+        // surface the HTTP status so logs/analytics can distinguish backend
+        // outages from generic "unknown" failures.
+        const fallbackReason = isAuthExpired
+          ? 'auth_expired'
+          : (error?.code || (error?.status ? `BACKEND_HTTP_${error.status}` : 'unknown'));
 
         // Choose a local provider the user can actually use. We respect the
         // configured transcriptionProvider first, then fall back to whichever
@@ -1504,9 +1583,11 @@ function setupIpcHandlers() {
         } else if (shouldTryLocal && !localProvider) {
           return {
             success: false,
+            // H-306: tightened from the cycle-2 long version. Same actionable
+            // info, fewer commas, friendlier on the 60x60 toast surface.
             error: isAuthExpired
-              ? 'Tu sesión expiró y no hay API key local configurada. Vuelve a iniciar sesión o agrega una key en Configuración para no perder servicio cuando esto ocurra.'
-              : 'Backend no disponible y no hay API key local configurada. Agrega una en Configuración para no perder servicio cuando esto ocurra.',
+              ? 'Tu sesión expiró. Inicia sesión de nuevo o agrega una API key en Configuración.'
+              : 'Backend no disponible y no hay API key local. Agrega una en Configuración.',
             code: isAuthExpired ? 'AUTH_EXPIRED_NO_LOCAL_KEY' : 'BACKEND_DOWN_NO_LOCAL_KEY'
           };
         } else {
@@ -1890,18 +1971,39 @@ function setupIpcHandlers() {
         const result = await processTextViaBackend(sanitizedText, { ...options, signal: abortSignal });
         const aiLatency = Date.now() - startTime;
 
+        // Backend returns {success:true, text, processed?:false, error?} when
+        // the upstream AI provider failed (e.g. revoked Anthropic key) but the
+        // server still echoes the raw text. The client (App.jsx) inspects
+        // metadata.processed and error to decide whether smart mode actually
+        // ran. Cycle 2 (H-204) added the client-side guard but the cycle-2
+        // implementation discarded these fields here, so the guard never fired
+        // in backend mode. Cycle 3 (H-301) restores the propagation.
+        const aiProcessed = result?.processed !== false;
+        const aiUpstreamError = result?.error || null;
+
         log('=== BACKEND PROCESS TEXT SUCCESS ===');
         log('Output words:', result.text.split(/\s+/).length);
         log(`Backend AI latency: ${aiLatency}ms`);
+        if (!aiProcessed) {
+          log('Backend reported processed=false:', aiUpstreamError || 'no error message');
+        }
 
         logAction('AI_PROCESSING_COMPLETE_BACKEND', {
           provider: options?.provider || 'anthropic',
           inputWords: sanitizedText.split(/\s+/).length,
           outputWords: result.text.split(/\s+/).length,
-          latencyMs: aiLatency
+          latencyMs: aiLatency,
+          processed: aiProcessed
         });
 
-        return { success: true, text: result.text, latencyMs: aiLatency, viaBackend: true };
+        return {
+          success: true,
+          text: result.text,
+          latencyMs: aiLatency,
+          viaBackend: true,
+          metadata: { processed: aiProcessed },
+          error: aiUpstreamError
+        };
       } catch (error) {
         if (error.name === 'AbortError' || abortSignal.aborted) {
           log('Backend AI processing cancelled by user');
@@ -2799,6 +2901,378 @@ Output el texto completo corregido, sin comillas.`;
   });
 
   // ==========================================
+  // COMMAND MODE (cycle 3 H-004)
+  // ==========================================
+
+  ipcMain.handle('get-command-mode-settings', () => {
+    return {
+      enabled: commandModeEnabled,
+      hotkey: commandHotkey,
+      supported: process.platform !== 'linux'
+    };
+  });
+
+  ipcMain.handle('set-command-mode-enabled', (event, enabled) => {
+    if (typeof enabled !== 'boolean') {
+      return { success: false, error: 'enabled debe ser boolean' };
+    }
+    if (enabled && process.platform === 'linux') {
+      return { success: false, error: 'Command Mode no soportado en Linux todavía' };
+    }
+    commandModeEnabled = enabled;
+    saveCommandModeConfig();
+    const result = registerCommandHotkey(commandHotkey);
+    if (!result.success && enabled) {
+      // Roll back so we don't leave the UI claiming the feature is on while
+      // the hotkey isn't actually bound.
+      commandModeEnabled = false;
+      saveCommandModeConfig();
+      return { success: false, error: result.error || 'No se pudo registrar el hotkey' };
+    }
+    logAction('COMMAND_MODE_TOGGLED', { enabled, hotkey: commandHotkey });
+    return { success: true, enabled: commandModeEnabled, hotkey: commandHotkey };
+  });
+
+  ipcMain.handle('set-command-hotkey', (event, newHotkey) => {
+    const validation = validateIpcMessage('set-hotkey', newHotkey);
+    if (!validation.isValid) {
+      return { success: false, error: validation.error };
+    }
+    const previous = commandHotkey;
+    commandHotkey = newHotkey;
+    const result = registerCommandHotkey(newHotkey);
+    if (!result.success) {
+      commandHotkey = previous;
+      registerCommandHotkey(previous);
+      return result;
+    }
+    saveCommandModeConfig();
+    logAction('COMMAND_HOTKEY_CHANGED', { hotkey: newHotkey });
+    return { success: true, hotkey: commandHotkey };
+  });
+
+  // command-mode-prep: snapshot the existing clipboard, simulate Ctrl/Cmd+C
+  // to grab whatever the user has selected, then read the clipboard again.
+  // If the contents are unchanged we infer there was no selection (or it was
+  // protected) and abort cleanly. Returns the captured selection on success.
+  ipcMain.handle('command-mode-prep', async () => {
+    if (commandModeBusy) {
+      return { success: false, error: 'busy', message: 'Command Mode ya está en uso' };
+    }
+    if (process.platform === 'linux') {
+      return { success: false, error: 'Command Mode no soportado en Linux todavía' };
+    }
+    commandModeBusy = true;
+    try {
+      const snapshot = clipboard.readText() || '';
+
+      if (process.platform === 'win32') {
+        const ps = spawn('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 50; [System.Windows.Forms.SendKeys]::SendWait("^c"); Start-Sleep -Milliseconds 100'
+        ]);
+        await new Promise((resolve) => {
+          ps.on('close', () => resolve());
+          ps.on('error', () => resolve());
+        });
+      } else if (process.platform === 'darwin') {
+        const osascript = spawn('osascript', [
+          '-e', 'tell application "System Events" to keystroke "c" using command down'
+        ]);
+        await new Promise((resolve) => {
+          osascript.on('close', () => resolve());
+          osascript.on('error', () => resolve());
+        });
+      }
+
+      // Give the OS a moment to populate the clipboard (PowerShell's
+      // synchronous return doesn't guarantee the paste buffer is updated).
+      await new Promise(r => setTimeout(r, 200));
+
+      const after = clipboard.readText() || '';
+      const captured = after && after !== snapshot ? after : '';
+
+      if (!captured) {
+        log('Command Mode prep: no selection detected (clipboard unchanged)');
+        return {
+          success: false,
+          error: 'no_selection',
+          message: 'Selecciona texto antes de usar Command Mode'
+        };
+      }
+
+      // Truncate very long selections so we don't blow Claude's context. The
+      // limit is generous (~4000 chars ≈ 1000 tokens), but we report it back
+      // so the renderer can warn the user they're seeing a partial rewrite.
+      const MAX_SELECTION = 4000;
+      const truncated = captured.length > MAX_SELECTION;
+      const selectedText = truncated ? captured.slice(0, MAX_SELECTION) : captured;
+
+      // Restore the user's pre-selection clipboard so Command Mode is
+      // transparent. The final paste step will overwrite it again with the
+      // rewritten text, but if the AI step fails we don't want to leak the
+      // selection into the user's clipboard history.
+      try { clipboard.writeText(snapshot); } catch (_) {}
+
+      log('Command Mode prep: captured', selectedText.length, 'chars, truncated:', truncated);
+      return {
+        success: true,
+        selectedText,
+        truncated,
+        originalLength: captured.length
+      };
+    } catch (err) {
+      logError('Command Mode prep failed:', err.message);
+      return { success: false, error: err.message };
+    } finally {
+      // Free the busy flag here. The actual recording + execute steps run
+      // outside this handler (the renderer drives them), so holding the
+      // flag through them would require state we don't have. The renderer's
+      // status machine prevents overlapping flows on its side.
+      commandModeBusy = false;
+    }
+  });
+
+  // command-mode-execute: takes the user's voice instruction (already turned
+  // into text by Whisper) plus the previously captured selection, builds a
+  // strict "rewrite this" prompt, calls process-text via the same code path
+  // as Smart Mode, then writes the result to the clipboard and pastes it
+  // (Ctrl+V). The renderer is responsible for hiding the floating window
+  // around this so focus returns to the originating app.
+  ipcMain.handle('command-mode-execute', async (event, payload) => {
+    if (!payload || typeof payload !== 'object') {
+      return { success: false, error: 'Payload inválido' };
+    }
+    const instruction = typeof payload.instruction === 'string' ? payload.instruction.trim() : '';
+    const selectedText = typeof payload.selectedText === 'string' ? payload.selectedText : '';
+
+    if (!instruction) {
+      return { success: false, error: 'no_instruction', message: 'No se detectó la instrucción de voz' };
+    }
+    if (!selectedText) {
+      return { success: false, error: 'no_selection', message: 'No hay texto seleccionado' };
+    }
+
+    const provider = payload.provider || 'anthropic';
+    const apiKey = payload.apiKey || '';
+    const anthropicKey = payload.anthropicKey || '';
+
+    // Build the prompt. Single string instead of structured user/system to
+    // route through the existing process-text plumbing without a special
+    // "command" mode in the AI pipeline. We send a self-contained instruction
+    // and rely on the AI to return ONLY the rewritten text.
+    const systemPrompt = `Eres un asistente que aplica una INSTRUCCIÓN al TEXTO seleccionado del usuario. Tu output debe ser SOLO el texto resultante, sin comentarios, sin explicar lo que hiciste. Mantén el idioma del texto a menos que la instrucción pida traducir.`;
+    const userPrompt = `INSTRUCCIÓN: ${instruction}\n\nTEXTO:\n${selectedText}\n\nOUTPUT (solo el texto resultante):`;
+
+    log('Command Mode execute: instruction length=' + instruction.length + ', selection length=' + selectedText.length);
+
+    // Use the existing AI plumbing. We avoid invoking the process-text IPC
+    // handler directly so we can pass a custom system prompt without
+    // refactoring the IPC contract; instead we duplicate the minimal call
+    // shape inline.
+    const abortController = new AbortController();
+    activeAbortControllers.add(abortController);
+    const cleanupAbort = () => activeAbortControllers.delete(abortController);
+
+    let resultText = null;
+    let aiLatency = 0;
+    let usedTransport = 'local';
+
+    try {
+      const startTime = Date.now();
+
+      if (backendMode && backendAccessToken) {
+        // Backend doesn't expose a "custom system prompt" endpoint, so for
+        // backend users we send the assembled prompt as a single user
+        // message and accept the standard system prompt from the server. The
+        // user-side instruction is explicit enough that the result is still
+        // useful in practice.
+        try {
+          const data = await backendRequest('/api/v1/ai/process', {
+            method: 'POST',
+            body: JSON.stringify({
+              text: `${systemPrompt}\n\n${userPrompt}`,
+              provider,
+              model: payload.model
+            }),
+            signal: abortController.signal
+          });
+          if (data?.processed === false || data?.error) {
+            throw new Error(data.error || 'Backend devolvió processed=false');
+          }
+          resultText = data.text;
+          usedTransport = 'backend';
+        } catch (backendErr) {
+          if (backendErr.name === 'AbortError' || abortController.signal.aborted) {
+            return { success: false, error: 'cancelled', code: 'CANCELLED' };
+          }
+          logError('Command Mode backend failed, trying local:', backendErr.message);
+          // Fall through to local path
+        }
+      }
+
+      if (!resultText) {
+        if (provider === 'anthropic') {
+          const key = secureStorage?.getSecure('anthropic_api_key') || anthropicKey || process.env.ANTHROPIC_API_KEY;
+          if (!key) throw new Error('Anthropic API key no configurada. Agrégala en Configuración → API Keys.');
+          const response = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': key,
+              'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({
+              model: payload.model || 'claude-3-haiku-20240307',
+              max_tokens: 2048,
+              system: systemPrompt,
+              messages: [{ role: 'user', content: userPrompt }]
+            }),
+            signal: abortController.signal
+          }, 3);
+          if (!response.ok) {
+            const errBody = await response.text();
+            throw new Error(`Anthropic ${response.status}: ${errBody.slice(0, 200)}`);
+          }
+          const data = await response.json();
+          resultText = data.content?.[0]?.text || '';
+          usedTransport = 'local';
+        } else {
+          // Default to OpenAI gpt-4o-mini if not Anthropic. Same fallback
+          // shape as process-text.
+          const key = secureStorage?.getSecure('openai_api_key') || apiKey || process.env.OPENAI_API_KEY;
+          if (!key) throw new Error('OpenAI API key no configurada. Agrégala en Configuración → API Keys.');
+          const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${key}`
+            },
+            body: JSON.stringify({
+              model: payload.model || 'gpt-4o-mini',
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+              ]
+            }),
+            signal: abortController.signal
+          }, 3);
+          if (!response.ok) {
+            const errBody = await response.text();
+            throw new Error(`OpenAI ${response.status}: ${errBody.slice(0, 200)}`);
+          }
+          const data = await response.json();
+          resultText = data.choices?.[0]?.message?.content || '';
+          usedTransport = 'local';
+        }
+      }
+
+      aiLatency = Date.now() - startTime;
+
+      if (!resultText || !resultText.trim()) {
+        return { success: false, error: 'empty_ai_response', message: 'La IA no devolvió texto' };
+      }
+
+      // Clean up the result: some models add quoting / leading "OUTPUT:" markers.
+      let cleaned = resultText.trim();
+      cleaned = cleaned.replace(/^OUTPUT\s*[:\-]?\s*/i, '').trim();
+      // Strip wrapping straight quotes if the entire text is quoted.
+      if (cleaned.length >= 2 && cleaned.startsWith('"') && cleaned.endsWith('"')) {
+        cleaned = cleaned.slice(1, -1).trim();
+      }
+
+      log(`Command Mode AI complete in ${aiLatency}ms (${usedTransport})`);
+
+      // Paste path: write to clipboard, hide window so focus returns to the
+      // originating app, simulate Ctrl/Cmd+V. We deliberately don't restore
+      // the previous clipboard, matching Wispr Flow's Command Mode behavior.
+      try { clipboard.writeText(cleaned); } catch (clipErr) {
+        logError('Command Mode clipboard write failed:', clipErr.message);
+      }
+
+      if (mainWindow) {
+        try { mainWindow.hide(); } catch (_) {}
+      }
+
+      await new Promise(r => setTimeout(r, 100));
+
+      if (process.platform === 'win32') {
+        const ps = spawn('powershell.exe', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'
+        ]);
+        await new Promise((resolve) => {
+          ps.on('close', () => resolve());
+          ps.on('error', () => resolve());
+        });
+      } else if (process.platform === 'darwin') {
+        const osascript = spawn('osascript', [
+          '-e', 'tell application "System Events" to keystroke "v" using command down'
+        ]);
+        await new Promise((resolve) => {
+          osascript.on('close', () => resolve());
+          osascript.on('error', () => resolve());
+        });
+      }
+
+      // Re-show the floating window after paste completes (matches paste-text behavior).
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            mainWindow.showInactive();
+            mainWindow.setAlwaysOnTop(true, 'floating');
+          } catch (_) {}
+        }
+      }, 400);
+
+      // Save to history. instruction goes in original_text so the user can
+      // see what they asked for; the rewritten output goes in processed_text.
+      try {
+        if (db) {
+          db.run(
+            `INSERT INTO transcriptions (original_text, processed_text, is_processed, processing_method, agent_name, error, transport)
+             VALUES (?, ?, 1, ?, ?, NULL, ?)`,
+            [instruction, cleaned, 'command', provider, usedTransport]
+          );
+          saveDatabase();
+        }
+      } catch (dbErr) {
+        logError('Command Mode history save failed:', dbErr.message);
+      }
+
+      logAction('COMMAND_MODE_COMPLETE', {
+        provider,
+        transport: usedTransport,
+        instructionLength: instruction.length,
+        selectionLength: selectedText.length,
+        outputLength: cleaned.length,
+        latencyMs: aiLatency
+      });
+
+      return {
+        success: true,
+        resultText: cleaned,
+        latencyMs: aiLatency,
+        transport: usedTransport
+      };
+
+    } catch (err) {
+      if (err.name === 'AbortError' || abortController.signal.aborted) {
+        log('Command Mode cancelled by user');
+        return { success: false, error: 'cancelled', code: 'CANCELLED' };
+      }
+      logError('Command Mode execute failed:', err.message);
+      return { success: false, error: err.message };
+    } finally {
+      cleanupAbort();
+    }
+  });
+
+  // ==========================================
   // BACKEND MODE HANDLERS
   // ==========================================
 
@@ -3419,6 +3893,14 @@ app.whenReady().then(async () => {
           currentHotkey = config.hotkey;
           log('Loaded saved hotkey:', currentHotkey);
         }
+        if (typeof config.commandHotkey === 'string' && config.commandHotkey.trim()) {
+          commandHotkey = config.commandHotkey.trim();
+          log('Loaded saved command hotkey:', commandHotkey);
+        }
+        if (typeof config.commandModeEnabled === 'boolean') {
+          commandModeEnabled = config.commandModeEnabled;
+          log('Command Mode enabled:', commandModeEnabled);
+        }
       }
     } catch (err) {
       log('No saved config found, using default hotkey');
@@ -3438,6 +3920,8 @@ app.whenReady().then(async () => {
     createControlPanel();
     createTray();
     registerHotkey(currentHotkey);
+    // Command Mode hotkey is only registered if the user opted in (cycle 3 H-004).
+    registerCommandHotkey(commandHotkey);
     setupIpcHandlers();
     setupAutoUpdater();
 
@@ -3543,4 +4027,29 @@ app.on('second-instance', () => {
     }
     mainWindow.focus();
   }
+});
+
+// Crash-path durability (cycle 3 H-302). The `will-quit` handler covers the
+// graceful shutdown path; these cover everything else. Each handler tries the
+// sync flush and swallows the error so the original termination signal is
+// honoured. We use `process.once` for SIGTERM/SIGINT so we don't fight any
+// listeners Electron registers internally beyond the first invocation.
+process.on('uncaughtException', (err) => {
+  try { flushDatabaseSync(); } catch (_) {}
+  try { logError('uncaughtException:', err?.stack || err?.message || String(err)); } catch (_) {}
+  // Intentionally do NOT call process.exit; let Electron decide. Recovering
+  // from the original error is preferable to forcing a hard kill that loses
+  // the window state.
+});
+
+process.once('SIGTERM', () => {
+  try { flushDatabaseSync(); } catch (_) {}
+  try { log('Received SIGTERM, exiting'); } catch (_) {}
+  process.exit(0);
+});
+
+process.once('SIGINT', () => {
+  try { flushDatabaseSync(); } catch (_) {}
+  try { log('Received SIGINT, exiting'); } catch (_) {}
+  process.exit(0);
 });
