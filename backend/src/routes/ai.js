@@ -53,13 +53,18 @@ router.post('/process',
       logger.info('AI processing completed', {
         userId: req.user.id,
         provider,
-        latency: result.latency
+        latency: result.latency,
+        guardrail: result.guardrail || null
       });
 
       res.json({
         success: true,
         text: result.text,
-        processed: true,
+        // When the guardrail fires we return the raw transcription instead of
+        // the AI's output, so processed=false signals to the client that this
+        // is the unmodified Whisper text. The guardrail field tells it why.
+        processed: !result.guardrail,
+        guardrail: result.guardrail || null,
         metadata: {
           provider: result.provider,
           model: result.model,
@@ -172,7 +177,10 @@ router.post('/transcribe-and-process',
         success: true,
         text: finalText,
         original_text: transcriptionResult.text,
-        ai_processed: !!aiResult,
+        // ai_processed=false when the guardrail fired (finalText equals raw
+        // transcription) so the client knows the AI step was skipped/reverted.
+        ai_processed: !!aiResult && !aiResult.guardrail,
+        guardrail: aiResult?.guardrail || null,
         metadata: {
           language,
           duration_seconds: estimatedDuration,

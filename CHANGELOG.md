@@ -7,6 +7,21 @@ y este proyecto adhiere a [Semantic Versioning](https://semver.org/lang/es/).
 
 ---
 
+## [1.9.0-beta.10] - 2026-04-29
+
+Fix de inyección de prompt en el post-procesamiento AI: cuando el dictado contenía instrucciones dirigidas a un AI ("quiero que investigues...", "respondé esto..."), Claude Haiku 4.5 las ejecutaba en vez de solo corregir tildes/puntuación, devolviendo una respuesta en lugar de la transcripción.
+
+### Corregido
+
+- **Post-procesamiento AI no responde a dictados con apariencia de prompt**: el texto del usuario ahora se envía envuelto en `<dictado>...</dictado>` y el system prompt instruye explícitamente al modelo a tratar todo lo que esté dentro de las etiquetas como texto a corregir, nunca como instrucción. Aplicado tanto en local mode (`main.js`) como en backend (`backend/src/services/aiService.js`).
+- **Guardrail de cordura post-AI**: si la salida del modelo difiere del input en >1.3x (alucinación/respuesta) o <0.7x (refusal/truncado) palabras, se descarta la respuesta del AI y se pega la transcripción cruda de Whisper. Solo se enforza para dictados de ≥10 palabras. Queda registrado como `AI_PROCESSING_GUARDRAIL_FALLBACK` en logs.
+
+### Actualizado
+
+- Backend `/api/v1/ai/process` y `/api/v1/ai/transcribe-and-process` propagan el flag `guardrail` y `processed: false` cuando el fallback se activa.
+
+---
+
 ## [1.9.0-beta.9] - 2026-04-22
 
 Backend infrastructure: Groq support for server-side transcription without per-user API keys.
